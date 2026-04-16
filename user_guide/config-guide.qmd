@@ -1,0 +1,24 @@
+---
+title: "Config Guide"
+description: "How to think about config files and where values belong."
+---
+
+Use the config files in this order:
+
+- schema defaults
+- `config.local.yaml` for machine-local values
+- `--config configs/...` for protocol overlays
+
+## File Roles
+
+- `config.local.yaml`: machine-specific values such as device endpoints, Doric DLL path, Doric UID, fallback port, and discovery settings
+- `configs/...`: protocol and experiment overlays
+- `config.example.yaml`: template/reference, not runtime input
+
+## Practical Rule
+
+Machine-local values belong in `config.local.yaml`.
+
+Protocol choices belong in `configs/...`.
+
+If you mix those, people will eventually run the wrong experiment on the wrong rig.

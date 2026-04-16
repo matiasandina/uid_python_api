@@ -1,0 +1,36 @@
+session_description: "openloop_5hz"
+
+triggers:
+  enabled: false
+
+stimulus:
+  enabled: true
+  mode: "laser"
+  control_mode: "open_loop"
+  open_loop_assignments:
+    - id: "box1"
+      device: "Reader-1"
+      channel: "ch1"
+  channels:
+    ch1:
+      current_ma: 50
+  run_for_minutes: 240.0
+  start:
+    mode: delay
+    delay_seconds: 300.0
+  window_on_seconds: 1.0
+  pulse:
+    period_ms: 200
+    time_on_ms: 10
+  train:
+    on_seconds: 1.0
+    off_seconds: 3.0
+  square:
+    nb_of_seq: 0
+    nb_of_pulses_per_seq: 0
+    starting_delay_ms: 0
+    delay_between_seq_ms: 0
+    ttl_output: true
+
+ttl_capture:
+  enabled: true

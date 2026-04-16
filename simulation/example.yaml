@@ -1,0 +1,19 @@
+seed: 123
+
+duration_seconds: 3600
+interval_seconds: 5.0
+
+animals:
+  - id: "ABCD1234"
+    base_temp: 37.5
+    trend_per_min: -0.02
+    noise_std: 0.05
+    zone: 1
+    missing_windows:
+      - start_min: 30
+        end_min: 40
+  - id: "EFGH5678"
+    base_temp: 38.2
+    trend_per_min: 0.01
+    noise_std: 0.08
+    zone: 2

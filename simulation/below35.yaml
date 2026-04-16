@@ -1,0 +1,11 @@
+seed: 123
+
+duration_seconds: 1800
+interval_seconds: 5.0
+
+animals:
+  - id: "ABCD1234"
+    base_temp: 36.5
+    trend_per_min: -0.08
+    noise_std: 0.05
+    zone: 1

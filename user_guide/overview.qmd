@@ -1,0 +1,47 @@
+---
+title: "Operator Guide"
+description: "Human-first entry point for running experiments with uid_python_api."
+---
+
+This guide is for humans running experiments, not for people reverse-engineering
+the codebase.
+
+Use this site in this order:
+
+1. Confirm the machine-local settings in `config.local.yaml`.
+2. Read the preflight walkthrough before running a live session.
+3. Read the open-loop or closed-loop guide for the experiment mode you are using.
+4. Use the troubleshooting guide when the symptom is clearer than the cause.
+
+## What The Software Does
+
+At a high level, a live run goes through these phases:
+
+1. Load machine-local config and the selected protocol overlay.
+2. Run preflight.
+3. Verify Doric and Teensy setup if the run can produce real outputs.
+4. Confirm launch.
+5. Start acquisition and show the live UI.
+
+The most important timing rule for humans is:
+
+- open-loop start schedules begin after launch confirmation, not when the program first opens
+
+## Safety Model
+
+- `stimulus.enabled=false` means no stimulation output.
+- `stimulus.mode=monitor` means observe-only, even if other stimulation fields are present.
+- `stimulus.mode=laser` means real hardware output is possible after preflight succeeds.
+- For laser runs, preflight is part of the run, not an optional extra.
+
+## What The Current Screenshots Cover
+
+- preflight ready state
+- preflight resize warning
+- open-loop launch summary
+- runtime waiting for start delay
+- runtime active state
+
+Still missing:
+
+- a blocked or faulted runtime example with clear operator messaging

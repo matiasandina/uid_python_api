@@ -1,0 +1,37 @@
+[project]
+name = "uid-python-api-teensy"
+version = "0.0.1"
+description = "Real-time UID Mouse Matrix monitoring, live UI, and Doric stimulation control"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pydantic>=2.8",
+  "pyserial>=3.5",
+  "pyyaml>=6.0",
+  "rich>=13.0",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+parquet = [
+  "pyarrow>=15.0",
+]
+analysis = [
+  "polars>=1.8",
+  "pyarrow>=15.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/matiasandina/uid_python_api"
+Documentation = "https://matiasandina.github.io/uid_python_api/"
+Repository = "https://github.com/matiasandina/uid_python_api"
+Issues = "https://github.com/matiasandina/uid_python_api/issues"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+]
+docs = [
+  "great-docs>=0.1; python_version >= '3.11'",
+]

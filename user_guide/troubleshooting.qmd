@@ -1,0 +1,56 @@
+---
+title: "Troubleshooting"
+description: "Symptom-first troubleshooting for operators."
+---
+
+This page is organized by operator symptom rather than by Python module.
+
+## The UI Looks Cramped Or Wrapped
+
+Likely cause:
+
+- the terminal window is too small for the Rich layout
+
+What to do:
+
+1. enlarge the terminal window
+2. reduce zoom if using native `cmd.exe`
+3. retry in a native Windows console if you were using a remote or embedded terminal
+
+## Launch Timing Is Confusing
+
+What to remember:
+
+- open-loop start schedules begin after launch confirmation
+
+If the launch summary says there is a 30 second delay, that delay starts when
+you approve launch in preflight.
+
+## The Run Is Monitoring But Not Producing Output
+
+What to check:
+
+1. confirm `stimulus.enabled`
+2. confirm `stimulus.mode`
+3. confirm preflight completed successfully
+4. confirm the intended channels are selected
+5. for closed-loop, confirm the classifier and threshold config are correct
+
+## Doric DLL Setup Fails
+
+What to check:
+
+1. confirm `stimulus.dll_path`
+2. run `scripts/doric_imports_diag.py`
+3. if needed, fall back to the known-good 2024 package while waiting on vendor guidance
+
+## TTL Or Output Behavior Worked Earlier But Not Now
+
+Treat this first as a possible regression or config drift problem.
+
+What to capture:
+
+1. exact overlay/config used in the known-good run
+2. exact overlay/config used in the failing run
+3. session metadata for both runs
+4. the approximate commit range between the last known-good and first known-bad behavior

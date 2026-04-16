@@ -1,0 +1,13 @@
+{
+  "sampling_rate_hz": 20000,
+  "frame_size": 2048,
+  "channel_map": [1, 2, 3, 4],
+  "firmware_version": "0.1.0",
+  "firmware_git_hash": "example",
+  "t0_monotonic_ns": 0,
+  "t0_frame_id": 0,
+  "wall_clock_start_iso": "2026-02-27T00:00:00+00:00",
+  "python_git_hash": "example",
+  "serial_port": "COM7",
+  "baudrate": 115200
+}

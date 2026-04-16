@@ -1,0 +1,45 @@
+---
+title: "Closed-Loop Guide"
+description: "How to reason about closed-loop rules, classifier timing, and output routing."
+---
+
+Closed-loop runs differ from open-loop runs in one important way:
+
+- stimulation is not scheduled just because time passes
+- stimulation depends on classifier decisions made from incoming data
+
+## What A Closed-Loop Rule Means
+
+Each entry in `closed_loop.rules[]` answers four questions:
+
+1. which device stream should be watched
+2. which classifier should evaluate that data
+3. how often the classifier should run and how much recent data it should inspect
+4. which laser channels should receive output if the rule fires
+
+## What Humans Need To Check
+
+Before running a closed-loop experiment, verify:
+
+- the correct reader/device names are listed under `closed_loop.rules[].devices`
+- the correct classifier plugin is selected
+- the output channels under `closed_loop.rules[].outputs.laser_channels` match the intended hardware path
+- the stimulation current and pulse/train settings match the intended protocol
+- the run is in `stimulus.mode=laser` if real output is intended
+
+## Timing Concepts
+
+There are three timing concepts in closed-loop runs:
+
+1. classifier evaluation cadence
+2. classifier input window
+3. stimulation behavior after a rule fires
+
+Do not confuse them.
+
+## Session-Specific Animal Assignment
+
+During preflight, closed-loop runs may ask you to assign RFID(s) to each rule
+for the current session.
+
+That assignment is session state, not permanent rig configuration.

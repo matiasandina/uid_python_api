@@ -1,0 +1,31 @@
+---
+title: "TTL Capture"
+description: "What TTL capture is for and what to check when using it."
+---
+
+TTL capture is optional and starts when:
+
+- stimulation is enabled
+- `stimulus.square.ttl_output=true`
+- `ttl_capture.port` is configured
+
+## Runtime Outputs
+
+TTL service writes session artifacts in the session folder:
+
+- `ttl_raw.bin`
+- `ttl_meta.json`
+
+## Utilities
+
+Standalone recorder:
+
+```bash
+uv run --python .venv/bin/python scripts/ttl_record.py --port COM7 --duration 30
+```
+
+Live monitor:
+
+```bash
+uv run --python .venv/bin/python scripts/ttl_monitor.py --port /dev/ttyACM0
+```

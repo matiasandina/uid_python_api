@@ -1,0 +1,62 @@
+# As of 2026-04-03, this file is a template only.
+# It is not loaded at runtime.
+#
+# Usage:
+# 1. Copy this file to config.local.yaml
+# 2. Fill in machine-specific values only
+# 3. Use --config with an overlay under configs/ for the actual experiment
+
+output_directory: "./data"
+
+# Optional folder label prefix.
+# session_description: null
+
+# Machine-local TCP reader endpoints.
+# devices:
+#   - host: "10.0.127.107"
+#     port: 10001
+#     name: "Reader-1"
+
+# Optional rig-specific UI / network / data overrides.
+# If omitted, safe code defaults are used.
+# display:
+#   refresh_hz: 10
+#   display_interval_seconds: 10.0
+#
+# network:
+#   socket_timeout_seconds: 5.0
+#   reconnect_delay_seconds: 30.0
+#   stale_timeout_seconds: 30.0
+#   health_check_interval_seconds: 10.0
+#
+# data:
+#   averaging_window_seconds: 60
+
+# Machine-local stimulation hardware settings.
+# Do not put stimulus.enabled / mode / control_mode here.
+# Those belong in overlays under configs/.
+# stimulus:
+#   # Optional. If omitted, the app looks under ./vendor/DoricSystemDLL.
+#   # Run: uv run --python .venv/bin/python scripts/setup_doric_dll.py
+#   dll_path: "./vendor/DoricSystemDLL"
+#   # Preferred with the April 2026 Doric DLL. If set, UID access skips port probing.
+#   uid: null
+#   # Fallback for older Doric DLLs or rigs that still use numeric USB ports.
+#   port: null
+#   discovery:
+#     candidate_ports: []
+#     probe_min_port: 1
+#     probe_max_port: 8
+#     probe_wait_ms: 20
+#     usb_vid: ""
+#     usb_pid: ""
+#   # Define stimulus.channels in the selected overlay when the run protocol
+#   # owns channel selection and current. Keep channel mapping here only if it
+#   # is truly machine-local and reused across protocols.
+
+# Machine-local TTL capture settings.
+# ttl_capture:
+#   port: null
+#   baudrate: 115200
+#   serial_timeout_seconds: 0.25
+#   read_chunk_bytes: 4096

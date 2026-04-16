@@ -1,0 +1,28 @@
+# Great Docs Configuration
+# As of 2026-04-15, this repo uses Great Docs for the published human manual
+# and a first-pass Python reference site.
+
+parser: numpy
+dynamic: true
+display_name: UID Python API
+repo: https://github.com/matiasandina/uid_python_api
+
+authors:
+  - name: Matias Andina
+    role: Author
+    email: matiasandina@gmail.com
+
+user_guide:
+  - section: Get Started
+    contents:
+      - overview.qmd
+      - preflight.qmd
+  - section: Run Modes
+    contents:
+      - open-loop.qmd
+      - closed-loop.qmd
+  - section: Operating Help
+    contents:
+      - troubleshooting.qmd
+      - config-guide.qmd
+      - ttl-capture.qmd
