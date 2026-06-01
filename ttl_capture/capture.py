@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from project_metadata import get_build_info
+from .frame_index import TTLFrameIndexWriter
 from .protocol import EXPECTED_SAMPLE_RATE_HZ, TTLHandshake
 from .reader import TeensyTTLReader
 
@@ -118,6 +119,7 @@ class TTLCaptureService:
 
     def _run(self) -> None:
         raw_path = self._session_folder / "ttl_raw.bin"
+        frames_path = self._session_folder / "ttl_frames.bin"
         meta_path = self._session_folder / "ttl_meta.json"
         self._session_folder.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +132,14 @@ class TTLCaptureService:
             self._handshake = self._reader.read_handshake()
             self._write_meta(meta_path, self._handshake)
 
-            with raw_path.open("ab") as raw_file:
+            with (
+                raw_path.open("ab") as raw_file,
+                TTLFrameIndexWriter(
+                    frames_path,
+                    sampling_rate_hz=self._handshake.sampling_rate_hz,
+                    frame_size=self._handshake.frame_size,
+                ) as frame_index,
+            ):
                 expected_next_frame_id: Optional[int] = None
                 for frame in self._reader.iter_frames():
                     if self._stop_event.is_set():
@@ -148,8 +157,14 @@ class TTLCaptureService:
                         self._t0_frame_id = frame.frame_id
                         self._write_meta(meta_path, self._handshake)
 
+                    payload_offset_bytes = raw_file.tell()
                     raw_file.write(frame.payload)
                     raw_file.flush()
+                    frame_index.append(
+                        frame_id=frame.frame_id,
+                        t_us_first_sample=frame.t_us_first_sample,
+                        payload_offset_bytes=payload_offset_bytes,
+                    )
 
                     with self._status_lock:
                         self._frames_received += 1

@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import numpy as np
 import polars as pl
+from ttl_capture.frame_index import read_frame_index
 
 
 TTL_EDGE_SCHEMA = {
@@ -59,6 +60,7 @@ def load_ttl_edges_table(
     progress = progress or _noop_progress
     ttl_meta_path = session_dir / "ttl_meta.json"
     ttl_raw_path = session_dir / "ttl_raw.bin"
+    ttl_frames_path = session_dir / "ttl_frames.bin"
     if not ttl_meta_path.exists() or not ttl_raw_path.exists():
         return pl.DataFrame(schema=TTL_EDGE_SCHEMA)
 
@@ -67,93 +69,63 @@ def load_ttl_edges_table(
     frame_size = int(ttl_meta["frame_size"])
     sample_rate_hz = int(ttl_meta["sampling_rate_hz"])
     t0_monotonic_ns = int(ttl_meta.get("t0_monotonic_ns", 0) or 0)
+    t0_frame_id = int(ttl_meta.get("t0_frame_id", 0) or 0)
     channel_map = [int(v) for v in ttl_meta.get("channel_map", [1, 2, 3, 4])]
     channels = min(4, len(channel_map))
     wall_clock_start = _parse_wall_clock_start(ttl_meta)
 
     progress(f"Reading TTL raw into memory ({raw_size_bytes / (1024 ** 3):.2f} GiB)")
     raw = np.fromfile(ttl_raw_path, dtype=np.uint8)
-    usable_samples = (raw.size // frame_size) * frame_size
-    if usable_samples == 0:
+    if raw.size == 0:
         return pl.DataFrame(schema=TTL_EDGE_SCHEMA)
-    if usable_samples != raw.size:
-        raw = raw[:usable_samples]
 
-    progress(
-        f"Vectorized TTL decode over {usable_samples:,} samples "
-        f"(active_low={active_low})"
-    )
-    rows: list[dict[str, object]] = []
-
-    for ch in range(channels):
-        channel_name = f"ch{channel_map[ch]}"
-        states = ((raw >> ch) & 0x01).astype(np.int8, copy=False)
-        if active_low:
-            states = 1 - states
-        prev = np.empty_like(states)
-        prev[0] = 0
-        prev[1:] = states[:-1]
-        transitions = states - prev
-        rising = np.flatnonzero(transitions == 1).astype(np.int64, copy=False)
-        falling = np.flatnonzero(transitions == -1).astype(np.int64, copy=False)
-
+    if ttl_frames_path.exists():
+        progress("Reading TTL frame index sidecar")
+        header, records = read_frame_index(ttl_frames_path)
+        if header.frame_size != frame_size:
+            raise ValueError(
+                f"TTL frame index frame_size mismatch: meta={frame_size} index={header.frame_size}"
+            )
+        if header.sampling_rate_hz != sample_rate_hz:
+            raise ValueError(
+                f"TTL frame index sampling_rate_hz mismatch: meta={sample_rate_hz} index={header.sampling_rate_hz}"
+            )
+        payload_offsets = np.array([record.payload_offset_bytes for record in records], dtype=np.int64)
+        frame_ids = np.array([record.frame_id for record in records], dtype=np.int64)
+        raw = _trim_or_validate_indexed_raw(raw=raw, frame_size=frame_size, payload_offsets=payload_offsets)
         progress(
-            f"{channel_name}: {rising.size} rising edges, {falling.size} falling edges"
+            f"Vectorized TTL decode over {raw.size:,} samples across {len(records)} indexed frame(s) "
+            f"(active_low={active_low})"
+        )
+    else:
+        usable_samples = (raw.size // frame_size) * frame_size
+        if usable_samples == 0:
+            return pl.DataFrame(schema=TTL_EDGE_SCHEMA)
+        if usable_samples != raw.size:
+            raw = raw[:usable_samples]
+        payload_offsets = np.arange(raw.size // frame_size, dtype=np.int64) * frame_size
+        frame_ids = t0_frame_id + np.arange(raw.size // frame_size, dtype=np.int64)
+        progress(
+            f"Vectorized TTL decode over {raw.size:,} samples "
+            f"(active_low={active_low})"
         )
 
-        fall_ptr = 0
-        n_falls = falling.size
+    rows = _decode_edge_rows(
+        raw=raw,
+        session_name=session_name,
+        frame_ids=frame_ids,
+        payload_offsets=payload_offsets,
+        frame_size=frame_size,
+        sample_rate_hz=sample_rate_hz,
+        t0_monotonic_ns=t0_monotonic_ns,
+        t0_frame_id=t0_frame_id,
+        wall_clock_start=wall_clock_start,
+        channel_map=channel_map,
+        channels=channels,
+        active_low=active_low,
+        progress=progress,
+    )
 
-        for sample_index in rising.tolist():
-            rows.append(
-                _edge_row(
-                    session_name=session_name,
-                    channel_name=channel_name,
-                    edge_type="rising",
-                    sample_index=int(sample_index),
-                    pulse_width_ms=0.0,
-                    sample_rate_hz=sample_rate_hz,
-                    t0_monotonic_ns=t0_monotonic_ns,
-                    wall_clock_start=wall_clock_start,
-                )
-            )
-
-        for sample_index in falling.tolist():
-            width_ms = 0.0
-            while fall_ptr < n_falls and falling[fall_ptr] < sample_index:
-                fall_ptr += 1
-            rows.append(
-                _edge_row(
-                    session_name=session_name,
-                    channel_name=channel_name,
-                    edge_type="falling",
-                    sample_index=int(sample_index),
-                    pulse_width_ms=width_ms,
-                    sample_rate_hz=sample_rate_hz,
-                    t0_monotonic_ns=t0_monotonic_ns,
-                    wall_clock_start=wall_clock_start,
-                )
-            )
-
-        # Replace falling pulse widths by pairing each rise with the next later fall.
-        if rising.size and falling.size:
-            paired_fall_indices = np.searchsorted(falling, rising, side="right")
-            pulse_width_by_fall: dict[int, float] = {}
-            for rise_sample, fall_pos in zip(rising.tolist(), paired_fall_indices.tolist()):
-                if fall_pos >= n_falls:
-                    continue
-                fall_sample = int(falling[fall_pos])
-                width_ms = ((fall_sample - int(rise_sample)) / float(sample_rate_hz)) * 1000.0
-                pulse_width_by_fall[fall_sample] = width_ms
-            for row in rows:
-                if (
-                    row["channel_name"] == channel_name
-                    and row["edge_type"] == "falling"
-                    and int(row["sample_index"]) in pulse_width_by_fall
-                ):
-                    row["pulse_width_ms"] = pulse_width_by_fall[int(row["sample_index"])]
-
-    rows.sort(key=lambda item: (str(item["channel_name"]), int(item["sample_index"]), str(item["edge_type"])))
     return pl.from_dicts(rows, schema=TTL_EDGE_SCHEMA) if rows else pl.DataFrame(schema=TTL_EDGE_SCHEMA)
 
 
@@ -289,12 +261,16 @@ def _edge_row(
     pulse_width_ms: float,
     sample_rate_hz: int,
     t0_monotonic_ns: int,
+    t0_frame_id: int,
+    frame_size: int,
     wall_clock_start: datetime | None,
 ) -> dict[str, object]:
-    monotonic_ns = t0_monotonic_ns + int((sample_index * 1_000_000_000) / sample_rate_hz)
+    base_sample_index = int(t0_frame_id) * int(frame_size)
+    delta_samples = int(sample_index) - base_sample_index
+    monotonic_ns = t0_monotonic_ns + int((delta_samples * 1_000_000_000) / sample_rate_hz)
     estimated_utc = None
     if wall_clock_start is not None and t0_monotonic_ns > 0:
-        estimated_utc = wall_clock_start + timedelta(microseconds=sample_index * 1_000_000 / sample_rate_hz)
+        estimated_utc = wall_clock_start + timedelta(microseconds=delta_samples * 1_000_000 / sample_rate_hz)
     return {
         "session_name": session_name,
         "channel_name": channel_name,
@@ -314,6 +290,152 @@ def _parse_wall_clock_start(ttl_meta: dict[str, Any]) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _trim_or_validate_indexed_raw(
+    *,
+    raw: np.ndarray,
+    frame_size: int,
+    payload_offsets: np.ndarray,
+) -> np.ndarray:
+    if payload_offsets.size == 0:
+        return np.empty(0, dtype=np.uint8)
+    required_bytes = int(payload_offsets[-1]) + int(frame_size)
+    if raw.size < required_bytes:
+        raise ValueError(
+            f"TTL raw payload is truncated for indexed decode: need {required_bytes} bytes, found {raw.size}."
+        )
+    if raw.size > required_bytes:
+        raw = raw[:required_bytes]
+    return raw
+
+
+def _decode_edge_rows(
+    *,
+    raw: np.ndarray,
+    session_name: str,
+    frame_ids: np.ndarray,
+    payload_offsets: np.ndarray,
+    frame_size: int,
+    sample_rate_hz: int,
+    t0_monotonic_ns: int,
+    t0_frame_id: int,
+    wall_clock_start: datetime | None,
+    channel_map: list[int],
+    channels: int,
+    active_low: bool,
+    progress: Callable[[str], None],
+) -> list[dict[str, object]]:
+    if frame_ids.size == 0:
+        return []
+    frame_payloads = _reshape_or_gather_frame_payloads(
+        raw=raw,
+        frame_size=frame_size,
+        payload_offsets=payload_offsets,
+    )
+    contiguous = np.zeros(frame_ids.size, dtype=bool)
+    if frame_ids.size > 1:
+        contiguous[1:] = frame_ids[1:] == (frame_ids[:-1] + 1)
+
+    rows: list[dict[str, object]] = []
+    for ch in range(channels):
+        channel_name = f"ch{channel_map[ch]}"
+        states = ((frame_payloads >> ch) & 0x01).astype(np.int8, copy=False)
+        if active_low:
+            states = 1 - states
+
+        prev = np.empty_like(states)
+        prev[:, 1:] = states[:, :-1]
+        prev[0, 0] = 0
+        if frame_ids.size > 1:
+            prev[1:, 0] = np.where(contiguous[1:], states[:-1, -1], 0)
+        transitions = states - prev
+
+        rising_pos = np.argwhere(transitions == 1)
+        falling_pos = np.argwhere(transitions == -1)
+        rising = (frame_ids[rising_pos[:, 0]] * frame_size + rising_pos[:, 1]).astype(np.int64, copy=False)
+        falling = (frame_ids[falling_pos[:, 0]] * frame_size + falling_pos[:, 1]).astype(np.int64, copy=False)
+
+        progress(
+            f"{channel_name}: {rising.size} rising edges, {falling.size} falling edges"
+        )
+
+        fall_ptr = 0
+        n_falls = falling.size
+        channel_row_start = len(rows)
+
+        for sample_index in rising.tolist():
+            rows.append(
+                _edge_row(
+                    session_name=session_name,
+                    channel_name=channel_name,
+                    edge_type="rising",
+                    sample_index=int(sample_index),
+                    pulse_width_ms=0.0,
+                    sample_rate_hz=sample_rate_hz,
+                    t0_monotonic_ns=t0_monotonic_ns,
+                    t0_frame_id=t0_frame_id,
+                    frame_size=frame_size,
+                    wall_clock_start=wall_clock_start,
+                )
+            )
+
+        for sample_index in falling.tolist():
+            while fall_ptr < n_falls and falling[fall_ptr] < sample_index:
+                fall_ptr += 1
+            rows.append(
+                _edge_row(
+                    session_name=session_name,
+                    channel_name=channel_name,
+                    edge_type="falling",
+                    sample_index=int(sample_index),
+                    pulse_width_ms=0.0,
+                    sample_rate_hz=sample_rate_hz,
+                    t0_monotonic_ns=t0_monotonic_ns,
+                    t0_frame_id=t0_frame_id,
+                    frame_size=frame_size,
+                    wall_clock_start=wall_clock_start,
+                )
+            )
+
+        if rising.size and falling.size:
+            paired_fall_indices = np.searchsorted(falling, rising, side="right")
+            pulse_width_by_fall: dict[int, float] = {}
+            for rise_sample, fall_pos in zip(rising.tolist(), paired_fall_indices.tolist()):
+                if fall_pos >= n_falls:
+                    continue
+                fall_sample = int(falling[fall_pos])
+                width_ms = ((fall_sample - int(rise_sample)) / float(sample_rate_hz)) * 1000.0
+                pulse_width_by_fall[fall_sample] = width_ms
+            for row in rows[channel_row_start:]:
+                if row["channel_name"] == channel_name and row["edge_type"] == "falling":
+                    sample_index = int(row["sample_index"])
+                    if sample_index in pulse_width_by_fall:
+                        row["pulse_width_ms"] = pulse_width_by_fall[sample_index]
+
+    rows.sort(key=lambda item: (str(item["channel_name"]), int(item["sample_index"]), str(item["edge_type"])))
+    return rows
+
+
+def _reshape_or_gather_frame_payloads(
+    *,
+    raw: np.ndarray,
+    frame_size: int,
+    payload_offsets: np.ndarray,
+) -> np.ndarray:
+    if payload_offsets.size == 0:
+        return np.empty((0, frame_size), dtype=np.uint8)
+    expected_offsets = np.arange(payload_offsets.size, dtype=np.int64) * frame_size
+    expected_bytes = payload_offsets.size * frame_size
+    if raw.size == expected_bytes and np.array_equal(payload_offsets, expected_offsets):
+        return raw.reshape(payload_offsets.size, frame_size)
+
+    frame_payloads = np.empty((payload_offsets.size, frame_size), dtype=np.uint8)
+    for idx, payload_offset in enumerate(payload_offsets.tolist()):
+        start = int(payload_offset)
+        stop = start + int(frame_size)
+        frame_payloads[idx, :] = raw[start:stop]
+    return frame_payloads
 
 
 def _channel_name_to_bitmask(channel_name: str) -> int:

@@ -10,6 +10,7 @@ import yaml
 
 from .capture import reconstruct_timestamp_ns
 from .edges import TTLEdge, extract_edges_from_payload
+from .frame_index import read_frame_index
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
 def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw_path = Path(ttl_raw_path)
     raw = raw_path.read_bytes()
+    frames_path = raw_path.with_name("ttl_frames.bin")
 
     frame_size = int(ttl_meta["frame_size"])
     sample_rate_hz = int(ttl_meta["sampling_rate_hz"])
@@ -141,42 +143,102 @@ def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[D
     t0_monotonic_ns = int(ttl_meta.get("t0_monotonic_ns", 0) or 0)
     channel_map = [int(v) for v in ttl_meta.get("channel_map", [1, 2, 3, 4])]
 
-    usable_bytes = (len(raw) // frame_size) * frame_size
     edges: List[Dict[str, Any]] = []
     channels = min(4, len(channel_map))
     last_state = [0] * channels
     rise_at: Dict[int, int] = {}
 
-    for chunk_index, offset in enumerate(range(0, usable_bytes, frame_size)):
-        payload = raw[offset : offset + frame_size]
-        frame_id = t0_frame_id + chunk_index
-        for edge in extract_edges_from_payload(
-            payload=payload,
-            sample_rate_hz=sample_rate_hz,
-            frame_size=frame_size,
-            frame_id_start=frame_id,
-            channels=channels,
-            last_state=last_state,
-            rise_at=rise_at,
-        ):
-            monotonic_ns = reconstruct_timestamp_ns(
-                t0_monotonic_ns=t0_monotonic_ns,
-                t0_frame_id=t0_frame_id,
-                frame_id=frame_id,
-                sample_offset=edge.sample_index - frame_id * frame_size,
-                frame_size=frame_size,
+    if frames_path.exists():
+        header, records = read_frame_index(frames_path)
+        if header.frame_size != frame_size:
+            raise ValueError(
+                f"TTL frame index frame_size mismatch: meta={frame_size} index={header.frame_size}"
+            )
+        if header.sampling_rate_hz != sample_rate_hz:
+            raise ValueError(
+                f"TTL frame index sampling_rate_hz mismatch: meta={sample_rate_hz} index={header.sampling_rate_hz}"
+            )
+        for record in records:
+            offset = int(record.payload_offset_bytes)
+            payload = raw[offset : offset + frame_size]
+            if len(payload) != frame_size:
+                raise ValueError(
+                    f"TTL raw payload is truncated for frame_id={record.frame_id}: expected {frame_size} bytes, "
+                    f"found {len(payload)}."
+                )
+            for edge in extract_edges_from_payload(
+                payload=payload,
                 sample_rate_hz=sample_rate_hz,
-            )
-            channel_name = f"ch{channel_map[edge.channel_index]}" if edge.channel_index < len(channel_map) else f"ch{edge.channel_index + 1}"
-            edges.append(
-                {
-                    "edge": edge,
-                    "monotonic_ns": monotonic_ns,
-                    "channel_name": channel_name,
-                    "pulse_width_ms": (edge.pulse_width_samples / float(sample_rate_hz)) * 1000.0,
-                }
-            )
+                frame_size=frame_size,
+                frame_id_start=int(record.frame_id),
+                channels=channels,
+                last_state=last_state,
+                rise_at=rise_at,
+            ):
+                edges.append(
+                    _edge_entry(
+                        edge=edge,
+                        channel_map=channel_map,
+                        t0_monotonic_ns=t0_monotonic_ns,
+                        t0_frame_id=t0_frame_id,
+                        frame_id=int(record.frame_id),
+                        frame_size=frame_size,
+                        sample_rate_hz=sample_rate_hz,
+                    )
+                )
+    else:
+        usable_bytes = (len(raw) // frame_size) * frame_size
+        for chunk_index, offset in enumerate(range(0, usable_bytes, frame_size)):
+            payload = raw[offset : offset + frame_size]
+            frame_id = t0_frame_id + chunk_index
+            for edge in extract_edges_from_payload(
+                payload=payload,
+                sample_rate_hz=sample_rate_hz,
+                frame_size=frame_size,
+                frame_id_start=frame_id,
+                channels=channels,
+                last_state=last_state,
+                rise_at=rise_at,
+            ):
+                edges.append(
+                    _edge_entry(
+                        edge=edge,
+                        channel_map=channel_map,
+                        t0_monotonic_ns=t0_monotonic_ns,
+                        t0_frame_id=t0_frame_id,
+                        frame_id=frame_id,
+                        frame_size=frame_size,
+                        sample_rate_hz=sample_rate_hz,
+                    )
+                )
     return edges
+
+
+def _edge_entry(
+    *,
+    edge: TTLEdge,
+    channel_map: List[int],
+    t0_monotonic_ns: int,
+    t0_frame_id: int,
+    frame_id: int,
+    frame_size: int,
+    sample_rate_hz: int,
+) -> Dict[str, Any]:
+    monotonic_ns = reconstruct_timestamp_ns(
+        t0_monotonic_ns=t0_monotonic_ns,
+        t0_frame_id=t0_frame_id,
+        frame_id=frame_id,
+        sample_offset=edge.sample_index - frame_id * frame_size,
+        frame_size=frame_size,
+        sample_rate_hz=sample_rate_hz,
+    )
+    channel_name = f"ch{channel_map[edge.channel_index]}" if edge.channel_index < len(channel_map) else f"ch{edge.channel_index + 1}"
+    return {
+        "edge": edge,
+        "monotonic_ns": monotonic_ns,
+        "channel_name": channel_name,
+        "pulse_width_ms": (edge.pulse_width_samples / float(sample_rate_hz)) * 1000.0,
+    }
 
 
 def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:

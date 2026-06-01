@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import polars as pl
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from analysis_tools import load_analysis_session
 from analysis_tools.ttl import reconstruct_sample_masks_from_pulses
+from ttl_capture.frame_index import TTLFrameIndexWriter
 
 
 class AnalysisToolsTests(unittest.TestCase):
@@ -104,6 +106,79 @@ class AnalysisToolsTests(unittest.TestCase):
             self.assertEqual(qc["ch1"]["pulse_count"], 1)
             reconstructed = reconstruct_sample_masks_from_pulses(result.ttl_pulses, total_samples=4)
             self.assertEqual(reconstructed, bytes([0, 1, 0, 0]))
+
+    def test_load_analysis_session_prefers_frame_index_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir = Path(tmpdir) / "2026_04_15_12_00_00_indexed"
+            session_dir.mkdir()
+
+            metadata = {
+                "session": {
+                    "session_folder": session_dir.name,
+                    "session_label": "indexed",
+                    "protocol_name": "openloop_20hz",
+                    "mode": "live",
+                    "start_time": "2026-04-15T12:00:00",
+                    "end_time": "2026-04-15T12:10:00",
+                },
+                "config": {
+                    "stimulus": {
+                        "enabled": True,
+                        "start": {"timezone": "America/New_York"},
+                        "channels": {"ch1": {"index": 0, "current_ma": 50.0}},
+                        "target_channels": ["ch1"],
+                        "pulse": {"period_ms": 100.0, "time_on_ms": 10.0},
+                    },
+                    "ttl_capture": {"enabled": True},
+                },
+                "triggers_by_animal": {},
+            }
+            (session_dir / "session.yaml").write_text(yaml.safe_dump(metadata, sort_keys=False), encoding="utf-8")
+            (session_dir / "Reader-1.csv").write_text(
+                "DateTime,UID,Temperature,Zone\n"
+                "2026-04-15 12:00:20.000,A1,36.1,1\n",
+                encoding="utf-8",
+            )
+            (session_dir / "ttl_meta.json").write_text(
+                json.dumps(
+                    {
+                        "sampling_rate_hz": 1000,
+                        "frame_size": 4,
+                        "channel_map": [1, 2, 3, 4],
+                        "t0_monotonic_ns": 1_000_000_000,
+                        "t0_frame_id": 0,
+                        "wall_clock_start_iso": "2026-04-15T16:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (session_dir / "ttl_raw.bin").write_bytes(bytes([
+                0, 1, 1, 0,
+                0, 1, 1, 0,
+            ]))
+            with TTLFrameIndexWriter(session_dir / "ttl_frames.bin", sampling_rate_hz=1000, frame_size=4) as writer:
+                writer.append(frame_id=0, t_us_first_sample=0, payload_offset_bytes=0)
+                writer.append(frame_id=2, t_us_first_sample=8000, payload_offset_bytes=4)
+
+            result = load_analysis_session(session_dir, ttl_active_low=False)
+
+        self.assertEqual(result.ttl_edges.height, 4)
+        rising_samples = (
+            result.ttl_edges
+            .filter(pl.col("channel_name") == "ch1")
+            .filter(pl.col("edge_type") == "rising")
+            .sort("sample_index")
+            .get_column("sample_index")
+            .to_list()
+        )
+        self.assertEqual(rising_samples, [1, 9])
+        pulse_starts = (
+            result.ttl_pulses
+            .sort("start_sample_index")
+            .get_column("start_sample_index")
+            .to_list()
+        )
+        self.assertEqual(pulse_starts, [1, 9])
 
 
 if __name__ == "__main__":
