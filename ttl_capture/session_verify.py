@@ -7,6 +7,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+import numpy as np
 import yaml
 from rich.console import Group
 from rich.panel import Panel
@@ -14,7 +15,6 @@ from rich.table import Table
 from rich.text import Text
 
 from .capture import reconstruct_timestamp_ns
-from .edges import TTLEdge, extract_edges_from_payload
 from .frame_index import TTLFrameIndexRecord, read_frame_index
 
 ProgressReporter = Optional[Callable[[str], None]]
@@ -151,29 +151,17 @@ def verify_session(
     )
     _emit_progress(progress, "Beginning TTL edge reconstruction; this may take a while for long sessions")
     edges = load_ttl_edges(ttl_raw_path=ttl_raw_path, ttl_meta=ttl_meta, progress=progress)
-    rising_edges = [edge for edge in edges if edge["edge"].edge_type == "rising"]
+    rising_edges = [edge for edge in edges if edge["edge_type"] == "rising"]
     _emit_progress(progress, f"Reconstructed {len(edges)} TTL edges ({len(rising_edges)} rising); matching command windows")
     windows = extract_command_windows(payload)
     frequency_note = build_frequency_note(payload)
 
     tolerance_ns = int(max(0.0, tolerance_ms) * 1_000_000.0)
-    window_results: List[WindowVerification] = []
-    used_edge_ids: set[int] = set()
-
-    for window in windows:
-        window_rising = [
-            edge
-            for edge in rising_edges
-            if (window.start_monotonic_ns - tolerance_ns) <= edge["monotonic_ns"] <= (window.stop_monotonic_ns + tolerance_ns)
-            and edge["channel_name"] == window.channel_name
-        ]
-        for edge in window_rising:
-            used_edge_ids.add(id(edge))
-        window_results.append(_verify_window(window, window_rising))
-
-    stray_rising_edges = [
-        edge for edge in rising_edges if id(edge) not in used_edge_ids
-    ]
+    window_results, stray_rising_edges = _match_windows_to_rising_edges(
+        windows=windows,
+        rising_edges=rising_edges,
+        tolerance_ns=tolerance_ns,
+    )
     if not windows:
         issues.append("No command windows with monotonic timing were found in session metadata.")
     if stray_rising_edges:
@@ -296,7 +284,7 @@ def load_ttl_edges(
     progress: ProgressReporter = None,
 ) -> List[Dict[str, Any]]:
     raw_path = Path(ttl_raw_path)
-    raw = raw_path.read_bytes()
+    raw = np.fromfile(raw_path, dtype=np.uint8)
     frames_path = raw_path.with_name("ttl_frames.bin")
 
     frame_size = int(ttl_meta["frame_size"])
@@ -304,12 +292,11 @@ def load_ttl_edges(
     t0_frame_id = int(ttl_meta.get("t0_frame_id", 0) or 0)
     t0_monotonic_ns = int(ttl_meta.get("t0_monotonic_ns", 0) or 0)
     channel_map = [int(v) for v in ttl_meta.get("channel_map", [1, 2, 3, 4])]
-
-    edges: List[Dict[str, Any]] = []
     channels = min(4, len(channel_map))
-    last_state = [0] * channels
-    rise_at: Dict[int, int] = {}
-    _emit_progress(progress, f"Loaded `{raw_path.name}` with {len(raw)} samples")
+    channels = min(4, len(channel_map))
+    _emit_progress(progress, f"Loaded `{raw_path.name}` with {raw.size} samples")
+    if raw.size == 0:
+        return []
 
     if frames_path.exists():
         header, records = read_frame_index(frames_path)
@@ -322,95 +309,32 @@ def load_ttl_edges(
             raise ValueError(
                 f"TTL frame index sampling_rate_hz mismatch: meta={sample_rate_hz} index={header.sampling_rate_hz}"
             )
-        report_every = max(1, len(records) // 20) if records else 1
-        for record_idx, record in enumerate(records, start=1):
-            offset = int(record.payload_offset_bytes)
-            payload = raw[offset : offset + frame_size]
-            if len(payload) != frame_size:
-                raise ValueError(
-                    f"TTL raw payload is truncated for frame_id={record.frame_id}: expected {frame_size} bytes, "
-                    f"found {len(payload)}."
-                )
-            for edge in extract_edges_from_payload(
-                payload=payload,
-                sample_rate_hz=sample_rate_hz,
-                frame_size=frame_size,
-                frame_id_start=int(record.frame_id),
-                channels=channels,
-                last_state=last_state,
-                rise_at=rise_at,
-            ):
-                edges.append(
-                    _edge_entry(
-                        edge=edge,
-                        channel_map=channel_map,
-                        t0_monotonic_ns=t0_monotonic_ns,
-                        t0_frame_id=t0_frame_id,
-                        frame_id=int(record.frame_id),
-                        frame_size=frame_size,
-                        sample_rate_hz=sample_rate_hz,
-                    )
-                )
-            if len(records) and (record_idx == 1 or record_idx % report_every == 0 or record_idx == len(records)):
-                _emit_progress(progress, f"Processed {record_idx}/{len(records)} indexed TTL frames")
+        payload_offsets = np.array([record.payload_offset_bytes for record in records], dtype=np.int64)
+        frame_ids = np.array([record.frame_id for record in records], dtype=np.int64)
+        raw = _trim_or_validate_indexed_raw(raw=raw, frame_size=frame_size, payload_offsets=payload_offsets)
+        _emit_progress(progress, f"Vectorized TTL decode over {raw.size:,} samples across {len(records)} indexed frame(s)")
     else:
-        usable_bytes = (len(raw) // frame_size) * frame_size
-        total_chunks = (usable_bytes // frame_size) if frame_size > 0 else 0
-        report_every = max(1, total_chunks // 20) if total_chunks else 1
-        _emit_progress(progress, f"No `ttl_frames.bin` present; scanning {total_chunks} contiguous raw frames")
-        for chunk_index, offset in enumerate(range(0, usable_bytes, frame_size)):
-            payload = raw[offset : offset + frame_size]
-            frame_id = t0_frame_id + chunk_index
-            for edge in extract_edges_from_payload(
-                payload=payload,
-                sample_rate_hz=sample_rate_hz,
-                frame_size=frame_size,
-                frame_id_start=frame_id,
-                channels=channels,
-                last_state=last_state,
-                rise_at=rise_at,
-            ):
-                edges.append(
-                    _edge_entry(
-                        edge=edge,
-                        channel_map=channel_map,
-                        t0_monotonic_ns=t0_monotonic_ns,
-                        t0_frame_id=t0_frame_id,
-                        frame_id=frame_id,
-                        frame_size=frame_size,
-                        sample_rate_hz=sample_rate_hz,
-                    )
-                )
-            if total_chunks and (chunk_index == 0 or (chunk_index + 1) % report_every == 0 or (chunk_index + 1) == total_chunks):
-                _emit_progress(progress, f"Processed {chunk_index + 1}/{total_chunks} raw TTL frames")
-    return edges
+        usable_samples = (raw.size // frame_size) * frame_size
+        if usable_samples == 0:
+            return []
+        if usable_samples != raw.size:
+            raw = raw[:usable_samples]
+        payload_offsets = np.arange(raw.size // frame_size, dtype=np.int64) * frame_size
+        frame_ids = t0_frame_id + np.arange(raw.size // frame_size, dtype=np.int64)
+        _emit_progress(progress, f"No `ttl_frames.bin` present; vectorized decode over {raw.size:,} contiguous samples")
 
-
-def _edge_entry(
-    *,
-    edge: TTLEdge,
-    channel_map: List[int],
-    t0_monotonic_ns: int,
-    t0_frame_id: int,
-    frame_id: int,
-    frame_size: int,
-    sample_rate_hz: int,
-) -> Dict[str, Any]:
-    monotonic_ns = reconstruct_timestamp_ns(
-        t0_monotonic_ns=t0_monotonic_ns,
-        t0_frame_id=t0_frame_id,
-        frame_id=frame_id,
-        sample_offset=edge.sample_index - frame_id * frame_size,
+    return _decode_edge_entries(
+        raw=raw,
+        frame_ids=frame_ids,
+        payload_offsets=payload_offsets,
         frame_size=frame_size,
         sample_rate_hz=sample_rate_hz,
+        t0_monotonic_ns=t0_monotonic_ns,
+        t0_frame_id=t0_frame_id,
+        channel_map=channel_map,
+        channels=channels,
+        progress=progress,
     )
-    channel_name = f"ch{channel_map[edge.channel_index]}" if edge.channel_index < len(channel_map) else f"ch{edge.channel_index + 1}"
-    return {
-        "edge": edge,
-        "monotonic_ns": monotonic_ns,
-        "channel_name": channel_name,
-        "pulse_width_ms": (edge.pulse_width_samples / float(sample_rate_hz)) * 1000.0,
-    }
 
 
 def _frame_gap_summary(records: List[TTLFrameIndexRecord]) -> tuple[List[str], int]:
@@ -445,6 +369,196 @@ def build_frequency_note(payload: Dict[str, Any]) -> Optional[str]:
         "The reported `inferred_frequency_hz` is calculated across the full session/window, "
         "so OFF gaps lower the value relative to the within-burst pulse rate."
     )
+
+
+def _trim_or_validate_indexed_raw(
+    *,
+    raw: np.ndarray,
+    frame_size: int,
+    payload_offsets: np.ndarray,
+) -> np.ndarray:
+    if payload_offsets.size == 0:
+        return np.empty(0, dtype=np.uint8)
+    required_bytes = int(payload_offsets[-1]) + int(frame_size)
+    if raw.size < required_bytes:
+        raise ValueError(
+            f"TTL raw payload is truncated for indexed decode: need {required_bytes} bytes, found {raw.size}."
+        )
+    if raw.size > required_bytes:
+        raw = raw[:required_bytes]
+    return raw
+
+
+def _reshape_or_gather_frame_payloads(
+    *,
+    raw: np.ndarray,
+    frame_size: int,
+    payload_offsets: np.ndarray,
+) -> np.ndarray:
+    if payload_offsets.size == 0:
+        return np.empty((0, frame_size), dtype=np.uint8)
+    expected_offsets = np.arange(payload_offsets.size, dtype=np.int64) * frame_size
+    expected_bytes = payload_offsets.size * frame_size
+    if raw.size == expected_bytes and np.array_equal(payload_offsets, expected_offsets):
+        return raw.reshape(payload_offsets.size, frame_size)
+
+    frame_payloads = np.empty((payload_offsets.size, frame_size), dtype=np.uint8)
+    for idx, payload_offset in enumerate(payload_offsets.tolist()):
+        start = int(payload_offset)
+        stop = start + int(frame_size)
+        frame_payloads[idx, :] = raw[start:stop]
+    return frame_payloads
+
+
+def _decode_edge_entries(
+    *,
+    raw: np.ndarray,
+    frame_ids: np.ndarray,
+    payload_offsets: np.ndarray,
+    frame_size: int,
+    sample_rate_hz: int,
+    t0_monotonic_ns: int,
+    t0_frame_id: int,
+    channel_map: List[int],
+    channels: int,
+    progress: ProgressReporter = None,
+) -> List[Dict[str, Any]]:
+    if frame_ids.size == 0:
+        return []
+    frame_payloads = _reshape_or_gather_frame_payloads(
+        raw=raw,
+        frame_size=frame_size,
+        payload_offsets=payload_offsets,
+    )
+    contiguous = np.zeros(frame_ids.size, dtype=bool)
+    if frame_ids.size > 1:
+        contiguous[1:] = frame_ids[1:] == (frame_ids[:-1] + 1)
+
+    edges: List[Dict[str, Any]] = []
+    for ch in range(channels):
+        channel_name = f"ch{channel_map[ch]}" if ch < len(channel_map) else f"ch{ch + 1}"
+        states = ((frame_payloads >> ch) & 0x01).astype(np.int8, copy=False)
+
+        prev = np.empty_like(states)
+        prev[:, 1:] = states[:, :-1]
+        prev[0, 0] = 0
+        if frame_ids.size > 1:
+            prev[1:, 0] = np.where(contiguous[1:], states[:-1, -1], 0)
+        transitions = states - prev
+
+        rising_pos = np.argwhere(transitions == 1)
+        falling_pos = np.argwhere(transitions == -1)
+        rising = (frame_ids[rising_pos[:, 0]] * frame_size + rising_pos[:, 1]).astype(np.int64, copy=False)
+        falling = (frame_ids[falling_pos[:, 0]] * frame_size + falling_pos[:, 1]).astype(np.int64, copy=False)
+        _emit_progress(progress, f"{channel_name}: {rising.size} rising edges, {falling.size} falling edges")
+
+        paired_fall_indices = np.searchsorted(falling, rising, side="right") if rising.size and falling.size else np.array([], dtype=np.int64)
+        pulse_width_by_fall: Dict[int, float] = {}
+        for rise_sample, fall_pos in zip(rising.tolist(), paired_fall_indices.tolist()):
+            if fall_pos >= falling.size:
+                continue
+            fall_sample = int(falling[fall_pos])
+            width_ms = ((fall_sample - int(rise_sample)) / float(sample_rate_hz)) * 1000.0
+            pulse_width_by_fall[fall_sample] = width_ms
+
+        for sample_index in rising.tolist():
+            monotonic_ns = _sample_to_monotonic_ns(
+                sample_index=int(sample_index),
+                frame_size=frame_size,
+                sample_rate_hz=sample_rate_hz,
+                t0_monotonic_ns=t0_monotonic_ns,
+                t0_frame_id=t0_frame_id,
+            )
+            edges.append(
+                {
+                    "edge_type": "rising",
+                    "sample_index": int(sample_index),
+                    "monotonic_ns": monotonic_ns,
+                    "channel_name": channel_name,
+                    "pulse_width_ms": 0.0,
+                }
+            )
+
+        for sample_index in falling.tolist():
+            monotonic_ns = _sample_to_monotonic_ns(
+                sample_index=int(sample_index),
+                frame_size=frame_size,
+                sample_rate_hz=sample_rate_hz,
+                t0_monotonic_ns=t0_monotonic_ns,
+                t0_frame_id=t0_frame_id,
+            )
+            edges.append(
+                {
+                    "edge_type": "falling",
+                    "sample_index": int(sample_index),
+                    "monotonic_ns": monotonic_ns,
+                    "channel_name": channel_name,
+                    "pulse_width_ms": pulse_width_by_fall.get(int(sample_index), 0.0),
+                }
+            )
+
+    edges.sort(key=lambda item: (str(item["channel_name"]), int(item["sample_index"]), str(item["edge_type"])))
+    return edges
+
+
+def _sample_to_monotonic_ns(
+    *,
+    sample_index: int,
+    frame_size: int,
+    sample_rate_hz: int,
+    t0_monotonic_ns: int,
+    t0_frame_id: int,
+) -> int:
+    frame_id = sample_index // frame_size
+    sample_offset = sample_index - frame_id * frame_size
+    return reconstruct_timestamp_ns(
+        t0_monotonic_ns=t0_monotonic_ns,
+        t0_frame_id=t0_frame_id,
+        frame_id=frame_id,
+        sample_offset=sample_offset,
+        frame_size=frame_size,
+        sample_rate_hz=sample_rate_hz,
+    )
+
+
+def _match_windows_to_rising_edges(
+    *,
+    windows: List[CommandWindow],
+    rising_edges: List[Dict[str, Any]],
+    tolerance_ns: int,
+) -> tuple[List[WindowVerification], List[Dict[str, Any]]]:
+    windows_by_channel: Dict[str, List[CommandWindow]] = {}
+    for window in windows:
+        windows_by_channel.setdefault(window.channel_name, []).append(window)
+
+    edges_by_channel: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in rising_edges:
+        edges_by_channel.setdefault(str(edge["channel_name"]), []).append(edge)
+
+    window_results: List[WindowVerification] = []
+    used_edge_keys: set[tuple[str, int]] = set()
+    for channel_name, channel_windows in windows_by_channel.items():
+        channel_edges = sorted(edges_by_channel.get(channel_name, []), key=lambda item: int(item["monotonic_ns"]))
+        monotonic_ns = np.array([int(edge["monotonic_ns"]) for edge in channel_edges], dtype=np.int64)
+        for window in channel_windows:
+            if monotonic_ns.size == 0:
+                window_results.append(_verify_window(window, []))
+                continue
+            start_bound = window.start_monotonic_ns - tolerance_ns
+            stop_bound = window.stop_monotonic_ns + tolerance_ns
+            left = int(np.searchsorted(monotonic_ns, start_bound, side="left"))
+            right = int(np.searchsorted(monotonic_ns, stop_bound, side="right"))
+            matched = channel_edges[left:right]
+            for edge in matched:
+                used_edge_keys.add((str(edge["channel_name"]), int(edge["sample_index"])))
+            window_results.append(_verify_window(window, matched))
+
+    stray_rising_edges = [
+        edge
+        for edge in rising_edges
+        if (str(edge["channel_name"]), int(edge["sample_index"])) not in used_edge_keys
+    ]
+    return window_results, stray_rising_edges
 
 
 def _parse_iso_datetime(value: Any) -> Optional[datetime]:
