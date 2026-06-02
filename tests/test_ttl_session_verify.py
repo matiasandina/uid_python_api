@@ -35,6 +35,10 @@ class TTLSessionVerifyTests(unittest.TestCase):
             (session_dir / "ttl_raw.bin").write_bytes(payload)
 
             metadata = {
+                "session": {
+                    "start_time": "2026-03-21T10:00:00",
+                    "end_time": "2026-03-21T10:00:01",
+                },
                 "triggers_by_animal": {
                     "__open_loop__": [
                         {
@@ -63,6 +67,13 @@ class TTLSessionVerifyTests(unittest.TestCase):
         self.assertEqual(report.channel_summaries["ch1"]["rising_edges"], 2)
         self.assertEqual(report.window_results[0].pulse_count, 2)
         self.assertEqual(report.window_results[0].inferred_frequency_hz, 100.0)
+        self.assertEqual(report.sample_coverage.total_samples, len(payload))
+        self.assertEqual(report.sample_coverage.estimated_frame_count_from_raw, 3)
+        self.assertAlmostEqual(report.sample_coverage.saved_duration_seconds, 0.03)
+        self.assertAlmostEqual(report.sample_coverage.expected_session_duration_seconds, 1.0)
+        self.assertEqual(report.sample_coverage.expected_session_samples, 1000)
+        self.assertAlmostEqual(report.sample_coverage.session_sample_coverage_ratio, 0.03)
+        self.assertFalse(report.continuity.frame_index_present)
 
     def test_verify_session_reports_stray_edges_outside_window(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -167,6 +178,9 @@ class TTLSessionVerifyTests(unittest.TestCase):
         self.assertEqual(report.continuity.missing_frame_count, 1)
         self.assertEqual(report.continuity.gap_ranges, ["1"])
         self.assertTrue(any("missing TTL frame(s)" in issue for issue in report.issues))
+        self.assertEqual(report.sample_coverage.total_samples, 8)
+        self.assertEqual(report.sample_coverage.estimated_frame_count_from_raw, 2)
+        self.assertAlmostEqual(report.sample_coverage.saved_duration_seconds, 0.008)
 
     def test_verify_session_warns_for_train_off_sessions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
