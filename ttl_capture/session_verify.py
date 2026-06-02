@@ -10,7 +10,7 @@ import yaml
 
 from .capture import reconstruct_timestamp_ns
 from .edges import TTLEdge, extract_edges_from_payload
-from .frame_index import read_frame_index
+from .frame_index import TTLFrameIndexRecord, read_frame_index
 
 
 @dataclass(frozen=True)
@@ -38,16 +38,28 @@ class WindowVerification:
 
 
 @dataclass(frozen=True)
+class FrameContinuitySummary:
+    frame_index_present: bool
+    first_frame_id: Optional[int]
+    last_frame_id: Optional[int]
+    frame_records: int
+    missing_frame_count: int
+    gap_ranges: List[str]
+
+
+@dataclass(frozen=True)
 class SessionVerificationReport:
     session_name: str
     ttl_enabled: bool
     metadata_path: Path
     ttl_meta_path: Optional[Path]
     ttl_raw_path: Optional[Path]
+    continuity: FrameContinuitySummary
     total_rising_edges: int
     stray_rising_edges: int
     windows_verified: int
     windows_ok: int
+    frequency_note: Optional[str]
     issues: List[str]
     channel_summaries: Dict[str, Dict[str, Any]]
     window_results: List[WindowVerification]
@@ -76,19 +88,30 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
             metadata_path=metadata_file,
             ttl_meta_path=ttl_meta_path if ttl_meta_path.exists() else None,
             ttl_raw_path=ttl_raw_path if ttl_raw_path.exists() else None,
+            continuity=FrameContinuitySummary(
+                frame_index_present=False,
+                first_frame_id=None,
+                last_frame_id=None,
+                frame_records=0,
+                missing_frame_count=0,
+                gap_ranges=[],
+            ),
             total_rising_edges=0,
             stray_rising_edges=0,
             windows_verified=0,
             windows_ok=0,
+            frequency_note=None,
             issues=issues,
             channel_summaries={},
             window_results=[],
         )
 
     ttl_meta = json.loads(ttl_meta_path.read_text(encoding="utf-8"))
+    continuity = summarize_frame_continuity(ttl_raw_path=ttl_raw_path)
     edges = load_ttl_edges(ttl_raw_path=ttl_raw_path, ttl_meta=ttl_meta)
     rising_edges = [edge for edge in edges if edge["edge"].edge_type == "rising"]
     windows = extract_command_windows(payload)
+    frequency_note = build_frequency_note(payload)
 
     tolerance_ns = int(max(0.0, tolerance_ms) * 1_000_000.0)
     window_results: List[WindowVerification] = []
@@ -112,6 +135,11 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
         issues.append("No command windows with monotonic timing were found in session metadata.")
     if stray_rising_edges:
         issues.append(f"Detected {len(stray_rising_edges)} rising TTL edge(s) outside commanded windows.")
+    if continuity.frame_index_present and continuity.missing_frame_count > 0:
+        issues.append(
+            f"Detected {continuity.missing_frame_count} missing TTL frame(s) from `ttl_frames.bin`: "
+            + ", ".join(continuity.gap_ranges)
+        )
 
     channel_summaries = summarize_edges_by_channel(rising_edges)
     windows_ok = sum(1 for result in window_results if result.ok)
@@ -122,13 +150,49 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
         metadata_path=metadata_file,
         ttl_meta_path=ttl_meta_path,
         ttl_raw_path=ttl_raw_path,
+        continuity=continuity,
         total_rising_edges=len(rising_edges),
         stray_rising_edges=len(stray_rising_edges),
         windows_verified=len(window_results),
         windows_ok=windows_ok,
+        frequency_note=frequency_note,
         issues=issues,
         channel_summaries=channel_summaries,
         window_results=window_results,
+    )
+
+
+def summarize_frame_continuity(ttl_raw_path: str | Path) -> FrameContinuitySummary:
+    frames_path = Path(ttl_raw_path).with_name("ttl_frames.bin")
+    if not frames_path.exists():
+        return FrameContinuitySummary(
+            frame_index_present=False,
+            first_frame_id=None,
+            last_frame_id=None,
+            frame_records=0,
+            missing_frame_count=0,
+            gap_ranges=[],
+        )
+
+    _header, records = read_frame_index(frames_path)
+    if not records:
+        return FrameContinuitySummary(
+            frame_index_present=True,
+            first_frame_id=None,
+            last_frame_id=None,
+            frame_records=0,
+            missing_frame_count=0,
+            gap_ranges=[],
+        )
+
+    gap_ranges, missing_frame_count = _frame_gap_summary(records)
+    return FrameContinuitySummary(
+        frame_index_present=True,
+        first_frame_id=int(records[0].frame_id),
+        last_frame_id=int(records[-1].frame_id),
+        frame_records=len(records),
+        missing_frame_count=missing_frame_count,
+        gap_ranges=gap_ranges,
     )
 
 
@@ -239,6 +303,40 @@ def _edge_entry(
         "channel_name": channel_name,
         "pulse_width_ms": (edge.pulse_width_samples / float(sample_rate_hz)) * 1000.0,
     }
+
+
+def _frame_gap_summary(records: List[TTLFrameIndexRecord]) -> tuple[List[str], int]:
+    gap_ranges: List[str] = []
+    missing_frame_count = 0
+    prev_frame_id: Optional[int] = None
+    for record in records:
+        frame_id = int(record.frame_id)
+        if prev_frame_id is not None and frame_id > prev_frame_id + 1:
+            gap_start = prev_frame_id + 1
+            gap_stop = frame_id - 1
+            gap_ranges.append(
+                f"{gap_start}" if gap_start == gap_stop else f"{gap_start}-{gap_stop}"
+            )
+            missing_frame_count += frame_id - prev_frame_id - 1
+        prev_frame_id = frame_id
+    return gap_ranges, missing_frame_count
+
+
+def build_frequency_note(payload: Dict[str, Any]) -> Optional[str]:
+    stimulus = payload.get("config", {}).get("stimulus", {})
+    if not isinstance(stimulus, dict):
+        return None
+    train = stimulus.get("train", {})
+    if not isinstance(train, dict):
+        return None
+    off_seconds = float(train.get("off_seconds", 0.0) or 0.0)
+    if off_seconds <= 0:
+        return None
+    return (
+        "This session uses train ON/OFF scheduling (`train.off_seconds > 0`). "
+        "The reported `inferred_frequency_hz` is calculated across the full session/window, "
+        "so OFF gaps lower the value relative to the within-burst pulse rate."
+    )
 
 
 def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
@@ -369,6 +467,19 @@ def format_report(report: SessionVerificationReport) -> str:
         lines.append(f"TTL meta: {report.ttl_meta_path}")
     if report.ttl_raw_path:
         lines.append(f"TTL raw: {report.ttl_raw_path}")
+    if report.continuity.frame_index_present:
+        continuity_line = (
+            "Frame continuity: "
+            f"records={report.continuity.frame_records} "
+            f"first_frame_id={report.continuity.first_frame_id} "
+            f"last_frame_id={report.continuity.last_frame_id} "
+            f"missing_frames={report.continuity.missing_frame_count}"
+        )
+        if report.continuity.gap_ranges:
+            continuity_line += f" gap_ranges={','.join(report.continuity.gap_ranges)}"
+        lines.append(continuity_line)
+    else:
+        lines.append("Frame continuity: `ttl_frames.bin` not present; continuity was not audited.")
     lines.append(
         "Summary: "
         f"windows_ok={report.windows_ok}/{report.windows_verified} "
@@ -393,6 +504,10 @@ def format_report(report: SessionVerificationReport) -> str:
                 f"last_before_stop_ms={result.last_pulse_before_stop_ms} "
                 f"inferred_frequency_hz={result.inferred_frequency_hz} note={result.note}"
             )
+
+    if report.frequency_note:
+        lines.append("Warnings:")
+        lines.append(f"- {report.frequency_note}")
 
     if report.issues:
         lines.append("Issues:")

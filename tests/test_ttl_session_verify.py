@@ -162,6 +162,64 @@ class TTLSessionVerifyTests(unittest.TestCase):
         self.assertEqual(report.windows_verified, 1)
         self.assertEqual(report.window_results[0].pulse_count, 2)
         self.assertEqual(report.window_results[0].inferred_frequency_hz, 125.0)
+        self.assertTrue(report.continuity.frame_index_present)
+        self.assertEqual(report.continuity.frame_records, 2)
+        self.assertEqual(report.continuity.missing_frame_count, 1)
+        self.assertEqual(report.continuity.gap_ranges, ["1"])
+        self.assertTrue(any("missing TTL frame(s)" in issue for issue in report.issues))
+
+    def test_verify_session_warns_for_train_off_sessions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "2026_03_21_10_00_00_session"
+            session_dir.mkdir()
+            metadata_path = session_dir / "session.yaml"
+
+            ttl_meta = {
+                "sampling_rate_hz": 1000,
+                "frame_size": 10,
+                "channel_map": [1, 2, 3, 4],
+                "t0_monotonic_ns": 0,
+                "t0_frame_id": 0,
+            }
+            (session_dir / "ttl_meta.json").write_text(json.dumps(ttl_meta), encoding="utf-8")
+            (session_dir / "ttl_raw.bin").write_bytes(bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]))
+
+            metadata = {
+                "config": {
+                    "stimulus": {
+                        "train": {
+                            "on_seconds": 1.0,
+                            "off_seconds": 3.0,
+                        }
+                    }
+                },
+                "triggers_by_animal": {
+                    "__open_loop__": [
+                        {
+                            "action": "start",
+                            "reason": "open_loop start",
+                            "timestamp": "2026-03-21T10:00:00",
+                            "meta": {"channels": ["ch1"], "recorded_monotonic_ns": 0},
+                        },
+                        {
+                            "action": "stop",
+                            "reason": "open_loop stop",
+                            "timestamp": "2026-03-21T10:00:01",
+                            "meta": {"channels": ["ch1"], "recorded_monotonic_ns": 15_000_000},
+                        },
+                    ]
+                },
+            }
+            metadata_path.write_text(yaml.safe_dump(metadata, sort_keys=False), encoding="utf-8")
+
+            report = verify_session(metadata_path, tolerance_ms=0.0)
+
+        self.assertIsNotNone(report.frequency_note)
+        self.assertIn("train.off_seconds > 0", report.frequency_note)
 
 
 if __name__ == "__main__":
