@@ -26,7 +26,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    report = verify_session(args.session_metadata, tolerance_ms=args.tolerance_ms)
+    with console.status("[bold cyan]Starting TTL session verification[/]", spinner="dots") as status:
+        def report_progress(message: str) -> None:
+            status.update(f"[bold cyan]{message}[/]")
+
+        report = verify_session(
+            args.session_metadata,
+            tolerance_ms=args.tolerance_ms,
+            progress=report_progress,
+        )
     console.print(render_report(report))
     return 0 if not report.issues and report.windows_verified > 0 and report.windows_ok == report.windows_verified else 1
 

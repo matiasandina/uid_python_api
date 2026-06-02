@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import yaml
 from rich.console import Group
@@ -16,6 +16,8 @@ from rich.text import Text
 from .capture import reconstruct_timestamp_ns
 from .edges import TTLEdge, extract_edges_from_payload
 from .frame_index import TTLFrameIndexRecord, read_frame_index
+
+ProgressReporter = Optional[Callable[[str], None]]
 
 
 @dataclass(frozen=True)
@@ -83,8 +85,13 @@ class SessionVerificationReport:
     window_results: List[WindowVerification]
 
 
-def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> SessionVerificationReport:
+def verify_session(
+    metadata_path: str | Path,
+    tolerance_ms: float = 100.0,
+    progress: ProgressReporter = None,
+) -> SessionVerificationReport:
     metadata_file = Path(metadata_path)
+    _emit_progress(progress, f"Loading session metadata from `{metadata_file}`")
     payload = yaml.safe_load(metadata_file.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
         raise ValueError("Session metadata must contain a YAML mapping.")
@@ -134,6 +141,7 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
             window_results=[],
         )
 
+    _emit_progress(progress, "Reading TTL metadata and estimating raw sample coverage")
     ttl_meta = json.loads(ttl_meta_path.read_text(encoding="utf-8"))
     continuity = summarize_frame_continuity(ttl_raw_path=ttl_raw_path)
     sample_coverage = estimate_sample_coverage(
@@ -141,8 +149,10 @@ def verify_session(metadata_path: str | Path, tolerance_ms: float = 100.0) -> Se
         ttl_raw_path=ttl_raw_path,
         ttl_meta=ttl_meta,
     )
-    edges = load_ttl_edges(ttl_raw_path=ttl_raw_path, ttl_meta=ttl_meta)
+    _emit_progress(progress, "Beginning TTL edge reconstruction; this may take a while for long sessions")
+    edges = load_ttl_edges(ttl_raw_path=ttl_raw_path, ttl_meta=ttl_meta, progress=progress)
     rising_edges = [edge for edge in edges if edge["edge"].edge_type == "rising"]
+    _emit_progress(progress, f"Reconstructed {len(edges)} TTL edges ({len(rising_edges)} rising); matching command windows")
     windows = extract_command_windows(payload)
     frequency_note = build_frequency_note(payload)
 
@@ -280,7 +290,11 @@ def estimate_sample_coverage(
     )
 
 
-def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+def load_ttl_edges(
+    ttl_raw_path: str | Path,
+    ttl_meta: Dict[str, Any],
+    progress: ProgressReporter = None,
+) -> List[Dict[str, Any]]:
     raw_path = Path(ttl_raw_path)
     raw = raw_path.read_bytes()
     frames_path = raw_path.with_name("ttl_frames.bin")
@@ -295,9 +309,11 @@ def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[D
     channels = min(4, len(channel_map))
     last_state = [0] * channels
     rise_at: Dict[int, int] = {}
+    _emit_progress(progress, f"Loaded `{raw_path.name}` with {len(raw)} samples")
 
     if frames_path.exists():
         header, records = read_frame_index(frames_path)
+        _emit_progress(progress, f"Using `{frames_path.name}` with {len(records)} indexed frame records")
         if header.frame_size != frame_size:
             raise ValueError(
                 f"TTL frame index frame_size mismatch: meta={frame_size} index={header.frame_size}"
@@ -306,7 +322,8 @@ def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[D
             raise ValueError(
                 f"TTL frame index sampling_rate_hz mismatch: meta={sample_rate_hz} index={header.sampling_rate_hz}"
             )
-        for record in records:
+        report_every = max(1, len(records) // 20) if records else 1
+        for record_idx, record in enumerate(records, start=1):
             offset = int(record.payload_offset_bytes)
             payload = raw[offset : offset + frame_size]
             if len(payload) != frame_size:
@@ -334,8 +351,13 @@ def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[D
                         sample_rate_hz=sample_rate_hz,
                     )
                 )
+            if len(records) and (record_idx == 1 or record_idx % report_every == 0 or record_idx == len(records)):
+                _emit_progress(progress, f"Processed {record_idx}/{len(records)} indexed TTL frames")
     else:
         usable_bytes = (len(raw) // frame_size) * frame_size
+        total_chunks = (usable_bytes // frame_size) if frame_size > 0 else 0
+        report_every = max(1, total_chunks // 20) if total_chunks else 1
+        _emit_progress(progress, f"No `ttl_frames.bin` present; scanning {total_chunks} contiguous raw frames")
         for chunk_index, offset in enumerate(range(0, usable_bytes, frame_size)):
             payload = raw[offset : offset + frame_size]
             frame_id = t0_frame_id + chunk_index
@@ -359,6 +381,8 @@ def load_ttl_edges(ttl_raw_path: str | Path, ttl_meta: Dict[str, Any]) -> List[D
                         sample_rate_hz=sample_rate_hz,
                     )
                 )
+            if total_chunks and (chunk_index == 0 or (chunk_index + 1) % report_every == 0 or (chunk_index + 1) == total_chunks):
+                _emit_progress(progress, f"Processed {chunk_index + 1}/{total_chunks} raw TTL frames")
     return edges
 
 
@@ -433,6 +457,11 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _emit_progress(progress: ProgressReporter, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
