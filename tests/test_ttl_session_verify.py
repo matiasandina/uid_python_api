@@ -235,6 +235,63 @@ class TTLSessionVerifyTests(unittest.TestCase):
         self.assertIsNotNone(report.frequency_note)
         self.assertIn("train.off_seconds > 0", report.frequency_note)
 
+    def test_verify_session_uses_within_burst_frequency_for_train_off_sessions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "2026_03_21_10_00_00_session"
+            session_dir.mkdir()
+            metadata_path = session_dir / "session.yaml"
+
+            ttl_meta = {
+                "sampling_rate_hz": 1000,
+                "frame_size": 10,
+                "channel_map": [1, 2, 3, 4],
+                "t0_monotonic_ns": 0,
+                "t0_frame_id": 0,
+            }
+            (session_dir / "ttl_meta.json").write_text(json.dumps(ttl_meta), encoding="utf-8")
+
+            payload = bytearray(90)
+            pulse_starts = [0, 10, 20, 30, 40, 80]
+            for start in pulse_starts:
+                payload[start:start + 2] = b"\x01\x01"
+            (session_dir / "ttl_raw.bin").write_bytes(bytes(payload))
+
+            metadata = {
+                "config": {
+                    "stimulus": {
+                        "pulse": {"period_ms": 10.0, "time_on_ms": 2.0},
+                        "train": {
+                            "on_seconds": 0.05,
+                            "off_seconds": 0.03,
+                        },
+                    }
+                },
+                "triggers_by_animal": {
+                    "__open_loop__": [
+                        {
+                            "action": "start",
+                            "reason": "open_loop start",
+                            "timestamp": "2026-03-21T10:00:00",
+                            "meta": {"channels": ["ch1"], "recorded_monotonic_ns": 0},
+                        },
+                        {
+                            "action": "stop",
+                            "reason": "open_loop stop",
+                            "timestamp": "2026-03-21T10:00:01",
+                            "meta": {"channels": ["ch1"], "recorded_monotonic_ns": 89_000_000},
+                        },
+                    ]
+                },
+            }
+            metadata_path.write_text(yaml.safe_dump(metadata, sort_keys=False), encoding="utf-8")
+
+            report = verify_session(metadata_path, tolerance_ms=0.0)
+
+        self.assertEqual(report.channel_summaries["ch1"]["rising_edges"], 6)
+        self.assertEqual(report.channel_summaries["ch1"]["inferred_frequency_hz"], 100.0)
+        self.assertEqual(report.window_results[0].inferred_frequency_hz, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

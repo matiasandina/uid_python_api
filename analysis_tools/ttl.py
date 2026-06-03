@@ -41,6 +41,7 @@ TTL_QC_SCHEMA = {
     "falling_edges": pl.Int64,
     "pulse_count": pl.Int64,
     "observed_frequency_hz": pl.Float64,
+    "observed_effective_frequency_hz": pl.Float64,
     "observed_pulse_width_ms": pl.Float64,
     "expected_period_ms": pl.Float64,
     "expected_frequency_hz": pl.Float64,
@@ -216,7 +217,11 @@ def build_ttl_qc_table(
         rising_edges = sum(1 for edge_type in edge_types if edge_type == "rising")
         falling_edges = sum(1 for edge_type in edge_types if edge_type == "falling")
         pulse_count = channel_pulses.height
-        observed_frequency_hz = _infer_frequency_hz(channel_pulses)
+        observed_frequency_hz = _infer_frequency_hz(
+            channel_pulses,
+            expected_period_ms=expected_period_ms,
+        )
+        observed_effective_frequency_hz = _infer_effective_frequency_hz(channel_pulses)
         observed_pulse_width_ms = None if channel_pulses.is_empty() else float(channel_pulses.get_column("pulse_width_ms").mean())
 
         startup_singleton_artifact = rising_edges == 1 and falling_edges == 0 and pulse_count == 0
@@ -233,6 +238,7 @@ def build_ttl_qc_table(
                 "falling_edges": falling_edges,
                 "pulse_count": pulse_count,
                 "observed_frequency_hz": observed_frequency_hz,
+                "observed_effective_frequency_hz": observed_effective_frequency_hz,
                 "observed_pulse_width_ms": observed_pulse_width_ms,
                 "expected_period_ms": expected_period_ms,
                 "expected_frequency_hz": expected_frequency_hz,
@@ -452,14 +458,73 @@ def _noop_progress(_: str) -> None:
     return None
 
 
-def _infer_frequency_hz(channel_pulses: pl.DataFrame) -> float | None:
+def _infer_frequency_hz(
+    channel_pulses: pl.DataFrame,
+    *,
+    expected_period_ms: float | None = None,
+) -> float | None:
+    intervals_ns = _pulse_start_intervals_ns(channel_pulses)
+    if not intervals_ns:
+        return None
+    representative_interval_ns = _infer_representative_interval_ns(
+        intervals_ns,
+        expected_period_ms=expected_period_ms,
+    )
+    if representative_interval_ns is None or representative_interval_ns <= 0:
+        return None
+    return 1e9 / representative_interval_ns
+
+
+def _infer_effective_frequency_hz(channel_pulses: pl.DataFrame) -> float | None:
+    intervals_ns = _pulse_start_intervals_ns(channel_pulses)
+    if not intervals_ns:
+        return None
+    avg_interval_ns = sum(intervals_ns) / len(intervals_ns)
+    if avg_interval_ns <= 0:
+        return None
+    return 1e9 / avg_interval_ns
+
+
+def _pulse_start_intervals_ns(channel_pulses: pl.DataFrame) -> list[int]:
     if channel_pulses.height < 2:
-        return None
+        return []
     starts_ns = [int(v) for v in channel_pulses.get_column("start_timestamp_monotonic_ns").to_list()]
-    duration_ns = starts_ns[-1] - starts_ns[0]
-    if duration_ns <= 0:
+    return [
+        curr - prev
+        for prev, curr in zip(starts_ns, starts_ns[1:])
+        if curr > prev
+    ]
+
+
+def _infer_representative_interval_ns(
+    intervals_ns: list[int],
+    *,
+    expected_period_ms: float | None = None,
+) -> float | None:
+    if not intervals_ns:
         return None
-    return (len(starts_ns) - 1) / (duration_ns / 1e9)
+
+    if expected_period_ms is not None and expected_period_ms > 0:
+        expected_interval_ns = expected_period_ms * 1_000_000.0
+        matched = [
+            interval_ns
+            for interval_ns in intervals_ns
+            if abs(interval_ns - expected_interval_ns) / expected_interval_ns <= 0.25
+        ]
+        if matched:
+            return float(np.median(np.array(matched, dtype=np.float64)))
+
+    min_interval_ns = min(intervals_ns)
+    fast_cluster_limit_ns = min_interval_ns * 1.5
+    fast_cluster = [
+        interval_ns
+        for interval_ns in intervals_ns
+        if interval_ns <= fast_cluster_limit_ns
+    ]
+    if fast_cluster:
+        return float(np.median(np.array(fast_cluster, dtype=np.float64)))
+
+    return float(np.median(np.array(intervals_ns, dtype=np.float64)))
 
 
 def _within_fraction(observed: float | None, expected: float | None, tolerance_frac: float) -> bool | None:

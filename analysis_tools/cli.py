@@ -37,12 +37,14 @@ def _print_ttl_qc_summary(ttl_qc: pl.DataFrame) -> None:
     print("TTL QC:")
     for row in ttl_qc.sort("channel_name").to_dicts():
         freq = row.get("observed_frequency_hz")
+        effective_freq = row.get("observed_effective_frequency_hz")
         width = row.get("observed_pulse_width_ms")
         freq_text = "-" if freq is None else f"{float(freq):.3f} Hz"
+        effective_freq_text = "-" if effective_freq is None else f"{float(effective_freq):.3f} Hz"
         width_text = "-" if width is None else f"{float(width):.3f} ms"
         print(
             f"  {row['channel_name']}: pulses={row['pulse_count']} "
-            f"freq={freq_text} width={width_text} "
+            f"freq={freq_text} effective_freq={effective_freq_text} width={width_text} "
             f"expected_active={row['expected_active']} "
             f"startup_singleton={row['startup_singleton_artifact']} "
             f"note={row['note']}"

@@ -154,6 +154,7 @@ def verify_session(
     rising_edges = [edge for edge in edges if edge["edge_type"] == "rising"]
     _emit_progress(progress, f"Reconstructed {len(edges)} TTL edges ({len(rising_edges)} rising); matching command windows")
     windows = extract_command_windows(payload)
+    expected_period_ms = _expected_pulse_period_ms(payload)
     frequency_note = build_frequency_note(payload)
 
     tolerance_ns = int(max(0.0, tolerance_ms) * 1_000_000.0)
@@ -161,6 +162,7 @@ def verify_session(
         windows=windows,
         rising_edges=rising_edges,
         tolerance_ns=tolerance_ns,
+        expected_period_ms=expected_period_ms,
     )
     if not windows:
         issues.append("No command windows with monotonic timing were found in session metadata.")
@@ -172,7 +174,7 @@ def verify_session(
             + ", ".join(continuity.gap_ranges)
         )
 
-    channel_summaries = summarize_edges_by_channel(rising_edges)
+    channel_summaries = summarize_edges_by_channel(rising_edges, expected_period_ms=expected_period_ms)
     windows_ok = sum(1 for result in window_results if result.ok)
 
     return SessionVerificationReport(
@@ -366,8 +368,8 @@ def build_frequency_note(payload: Dict[str, Any]) -> Optional[str]:
         return None
     return (
         "This session uses train ON/OFF scheduling (`train.off_seconds > 0`). "
-        "The reported `inferred_frequency_hz` is calculated across the full session/window, "
-        "so OFF gaps lower the value relative to the within-burst pulse rate."
+        "The reported `inferred_frequency_hz` reflects the representative within-burst pulse cadence, "
+        "not the lower effective rate created by OFF gaps."
     )
 
 
@@ -526,6 +528,7 @@ def _match_windows_to_rising_edges(
     windows: List[CommandWindow],
     rising_edges: List[Dict[str, Any]],
     tolerance_ns: int,
+    expected_period_ms: Optional[float] = None,
 ) -> tuple[List[WindowVerification], List[Dict[str, Any]]]:
     windows_by_channel: Dict[str, List[CommandWindow]] = {}
     for window in windows:
@@ -542,7 +545,7 @@ def _match_windows_to_rising_edges(
         monotonic_ns = np.array([int(edge["monotonic_ns"]) for edge in channel_edges], dtype=np.int64)
         for window in channel_windows:
             if monotonic_ns.size == 0:
-                window_results.append(_verify_window(window, []))
+                window_results.append(_verify_window(window, [], expected_period_ms=expected_period_ms))
                 continue
             start_bound = window.start_monotonic_ns - tolerance_ns
             stop_bound = window.stop_monotonic_ns + tolerance_ns
@@ -551,7 +554,7 @@ def _match_windows_to_rising_edges(
             matched = channel_edges[left:right]
             for edge in matched:
                 used_edge_keys.add((str(edge["channel_name"]), int(edge["sample_index"])))
-            window_results.append(_verify_window(window, matched))
+            window_results.append(_verify_window(window, matched, expected_period_ms=expected_period_ms))
 
     stray_rising_edges = [
         edge
@@ -631,7 +634,11 @@ def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
     return windows
 
 
-def summarize_edges_by_channel(rising_edges: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def summarize_edges_by_channel(
+    rising_edges: Iterable[Dict[str, Any]],
+    *,
+    expected_period_ms: Optional[float] = None,
+) -> Dict[str, Dict[str, Any]]:
     by_channel: Dict[str, List[Dict[str, Any]]] = {}
     for edge in rising_edges:
         by_channel.setdefault(edge["channel_name"], []).append(edge)
@@ -640,7 +647,10 @@ def summarize_edges_by_channel(rising_edges: Iterable[Dict[str, Any]]) -> Dict[s
     for channel_name, edges in sorted(by_channel.items()):
         monotonic_ns = [edge["monotonic_ns"] for edge in edges]
         pulse_width_ms = [float(edge["pulse_width_ms"]) for edge in edges if edge["pulse_width_ms"] > 0]
-        inferred_frequency_hz = _frequency_from_monotonic_ns(monotonic_ns)
+        inferred_frequency_hz = _frequency_from_monotonic_ns(
+            monotonic_ns,
+            expected_period_ms=expected_period_ms,
+        )
         summaries[channel_name] = {
             "rising_edges": len(edges),
             "inferred_frequency_hz": inferred_frequency_hz,
@@ -649,7 +659,12 @@ def summarize_edges_by_channel(rising_edges: Iterable[Dict[str, Any]]) -> Dict[s
     return summaries
 
 
-def _verify_window(window: CommandWindow, window_rising: List[Dict[str, Any]]) -> WindowVerification:
+def _verify_window(
+    window: CommandWindow,
+    window_rising: List[Dict[str, Any]],
+    *,
+    expected_period_ms: Optional[float] = None,
+) -> WindowVerification:
     if not window_rising:
         return WindowVerification(
             channel_name=window.channel_name,
@@ -666,7 +681,10 @@ def _verify_window(window: CommandWindow, window_rising: List[Dict[str, Any]]) -
     monotonic_ns = [edge["monotonic_ns"] for edge in window_rising]
     first_latency_ms = (min(monotonic_ns) - window.start_monotonic_ns) / 1_000_000.0
     last_before_stop_ms = (window.stop_monotonic_ns - max(monotonic_ns)) / 1_000_000.0
-    frequency_hz = _frequency_from_monotonic_ns(monotonic_ns)
+    frequency_hz = _frequency_from_monotonic_ns(
+        monotonic_ns,
+        expected_period_ms=expected_period_ms,
+    )
     return WindowVerification(
         channel_name=window.channel_name,
         start_monotonic_ns=window.start_monotonic_ns,
@@ -680,20 +698,70 @@ def _verify_window(window: CommandWindow, window_rising: List[Dict[str, Any]]) -
     )
 
 
-def _frequency_from_monotonic_ns(monotonic_ns: List[int]) -> Optional[float]:
-    if len(monotonic_ns) < 2:
+def _frequency_from_monotonic_ns(
+    monotonic_ns: List[int],
+    *,
+    expected_period_ms: Optional[float] = None,
+) -> Optional[float]:
+    intervals_ns = [
+        curr - prev
+        for prev, curr in zip(monotonic_ns, monotonic_ns[1:])
+        if curr > prev
+    ]
+    if not intervals_ns:
         return None
-    intervals_s = []
-    for prev, curr in zip(monotonic_ns, monotonic_ns[1:]):
-        delta_ns = curr - prev
-        if delta_ns > 0:
-            intervals_s.append(delta_ns / 1_000_000_000.0)
-    if not intervals_s:
+
+    representative_interval_ns = _representative_interval_ns(
+        intervals_ns,
+        expected_period_ms=expected_period_ms,
+    )
+    if representative_interval_ns is None or representative_interval_ns <= 0:
         return None
-    avg_interval_s = mean(intervals_s)
-    if avg_interval_s <= 0:
+    return round(1_000_000_000.0 / representative_interval_ns, 3)
+
+
+def _representative_interval_ns(
+    intervals_ns: List[int],
+    *,
+    expected_period_ms: Optional[float] = None,
+) -> Optional[float]:
+    if not intervals_ns:
         return None
-    return round(1.0 / avg_interval_s, 3)
+
+    if expected_period_ms is not None and expected_period_ms > 0:
+        expected_interval_ns = expected_period_ms * 1_000_000.0
+        matched = [
+            interval_ns
+            for interval_ns in intervals_ns
+            if abs(interval_ns - expected_interval_ns) / expected_interval_ns <= 0.25
+        ]
+        if matched:
+            return float(np.median(np.array(matched, dtype=np.float64)))
+
+    min_interval_ns = min(intervals_ns)
+    fast_cluster_limit_ns = min_interval_ns * 1.5
+    fast_cluster = [interval_ns for interval_ns in intervals_ns if interval_ns <= fast_cluster_limit_ns]
+    if fast_cluster:
+        return float(np.median(np.array(fast_cluster, dtype=np.float64)))
+
+    return float(np.median(np.array(intervals_ns, dtype=np.float64)))
+
+
+def _expected_pulse_period_ms(payload: Dict[str, Any]) -> Optional[float]:
+    stimulus = payload.get("config", {}).get("stimulus", {})
+    if not isinstance(stimulus, dict):
+        return None
+    pulse = stimulus.get("pulse", {})
+    if not isinstance(pulse, dict):
+        return None
+    value = pulse.get("period_ms")
+    if value is None:
+        return None
+    try:
+        period_ms = float(value)
+    except (TypeError, ValueError):
+        return None
+    return period_ms if period_ms > 0 else None
 
 
 def format_report(report: SessionVerificationReport) -> str:

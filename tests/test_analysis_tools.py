@@ -12,11 +12,54 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from analysis_tools import load_analysis_session
-from analysis_tools.ttl import reconstruct_sample_masks_from_pulses
+from analysis_tools.ttl import (
+    TTL_PULSE_SCHEMA,
+    build_ttl_qc_table,
+    reconstruct_sample_masks_from_pulses,
+)
 from ttl_capture.frame_index import TTLFrameIndexWriter
 
 
 class AnalysisToolsTests(unittest.TestCase):
+    def test_ttl_qc_uses_within_bout_pulse_frequency_for_train_stimulation(self):
+        pulse_rows = []
+        pulse_width_ms = 10.0
+        pulse_width_ns = int(pulse_width_ms * 1_000_000)
+        for bout_idx in range(5):
+            bout_start_ns = bout_idx * 4_000_000_000
+            for pulse_idx in range(10):
+                start_ns = bout_start_ns + (pulse_idx * 100_000_000)
+                pulse_rows.append(
+                    {
+                        "session_name": "session",
+                        "channel_name": "ch1",
+                        "start_sample_index": 0,
+                        "stop_sample_index": 0,
+                        "start_timestamp_monotonic_ns": start_ns,
+                        "stop_timestamp_monotonic_ns": start_ns + pulse_width_ns,
+                        "start_timestamp_estimated_utc": None,
+                        "stop_timestamp_estimated_utc": None,
+                        "pulse_width_ms": pulse_width_ms,
+                    }
+                )
+
+        ttl_pulses = pl.from_dicts(pulse_rows, schema=TTL_PULSE_SCHEMA)
+        ttl_qc = build_ttl_qc_table(
+            pl.DataFrame(schema={"channel_name": pl.Utf8, "edge_type": pl.Utf8}),
+            ttl_pulses,
+            stimulus_config={
+                "channels": {"ch1": {"index": 0}},
+                "target_channels": ["ch1"],
+                "pulse": {"period_ms": 100.0, "time_on_ms": 10.0},
+            },
+        )
+
+        row = ttl_qc.row(0, named=True)
+        self.assertAlmostEqual(row["observed_frequency_hz"], 10.0, places=6)
+        self.assertAlmostEqual(row["observed_effective_frequency_hz"], 49.0 / 16.9, places=6)
+        self.assertTrue(row["frequency_ok"])
+        self.assertEqual(row["note"], "active channel within tolerance")
+
     def test_load_analysis_session_normalizes_time_and_stim_windows(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             session_dir = Path(tmpdir) / "2026_04_15_12_00_00_test"
