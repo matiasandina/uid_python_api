@@ -514,6 +514,17 @@ class DeviceManager:
         started = 0
         for rule in rules:
             classifier_cfg = rule.get("classifier", {})
+            assigned_ids = [
+                str(animal_id).strip().upper()
+                for animal_id in rule.get("assigned_animal_ids", [])
+                if str(animal_id).strip()
+            ]
+            if not assigned_ids:
+                self._log(
+                    f"Closed-loop rule '{rule.get('id', '?')}' disabled: no assigned RFIDs. "
+                    "Assign at least one RFID during preflight."
+                )
+                continue
             try:
                 classifier = load_classifier(classifier_cfg["plugin"])
             except Exception as exc:
@@ -531,7 +542,7 @@ class DeviceManager:
                 rule_id=str(rule.get("id", "")),
                 device_names=resolved_devices,
                 target_channels=rule.get("outputs", {}).get("laser_channels", []),
-                assigned_animal_ids=rule.get("assigned_animal_ids", []),
+                assigned_animal_ids=assigned_ids,
                 on_trigger=self._handle_trigger_event,
                 on_missing=self._handle_missing_animal,
                 quiet_mode=self._quiet_mode,

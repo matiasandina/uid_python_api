@@ -2,6 +2,7 @@ import unittest
 
 from preflight_ui import (
     _build_preflight_menu_options,
+    _closed_loop_unassigned_rule_ids,
     build_doric_probe_candidates,
     split_doric_probe_candidates,
     build_square_wave_preview,
@@ -84,6 +85,28 @@ class PreflightUiPureFunctionTests(unittest.TestCase):
             LiveState(),
         )
         self.assertEqual(options[2], "Test Laser Program w/o Animals")
+
+    def test_closed_loop_unassigned_rules_are_reported(self):
+        config = {
+            "stimulus": {"control_mode": "closed_loop"},
+            "closed_loop": {
+                "rules": [
+                    {"id": "box1", "assigned_animal_ids": []},
+                    {"id": "box2", "assigned_animal_ids": ["abc123"]},
+                    {"id": "box3"},
+                ]
+            },
+        }
+
+        self.assertEqual(_closed_loop_unassigned_rule_ids(config), ["box1", "box3"])
+
+    def test_open_loop_does_not_require_closed_loop_assignments(self):
+        config = {
+            "stimulus": {"control_mode": "open_loop"},
+            "closed_loop": {"rules": [{"id": "box1", "assigned_animal_ids": []}]},
+        }
+
+        self.assertEqual(_closed_loop_unassigned_rule_ids(config), [])
 
 
 if __name__ == "__main__":

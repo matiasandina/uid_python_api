@@ -1062,6 +1062,40 @@ def _format_detected_animal_ids(ids: List[str]) -> str:
     return ", ".join(f"[bold green]{animal_id}[/bold green]" for animal_id in ids)
 
 
+def _closed_loop_unassigned_rule_ids(config: Dict[str, Any]) -> List[str]:
+    if str(config.get("stimulus", {}).get("control_mode", "closed_loop")).lower() != "closed_loop":
+        return []
+    missing: List[str] = []
+    for rule in get_closed_loop_rules(config):
+        assigned = _normalize_animal_ids(rule.get("assigned_animal_ids", []))
+        if not assigned:
+            missing.append(str(rule.get("id", "?")))
+    return missing
+
+
+def _show_closed_loop_assignment_block(console: Any, missing_rule_ids: List[str]) -> None:
+    if not missing_rule_ids:
+        return
+    lines = [
+        "Closed-loop launch blocked: every rule must have at least one assigned RFID.",
+        f"Missing assignment for rule(s): {', '.join(missing_rule_ids)}",
+        "Retry RFID scan or enter the RFID manually before launch.",
+    ]
+    if console is None:
+        for line in lines:
+            print(line)
+        return
+    from rich.panel import Panel
+
+    console.print(
+        Panel.fit(
+            "\n".join(lines),
+            title="[bold red]Closed-Loop Assignment Required[/bold red]",
+            border_style="red",
+        )
+    )
+
+
 def _render_closed_loop_rule_assignment_panel(
     console: Any,
     rule: Dict[str, Any],
@@ -1286,21 +1320,22 @@ def _prompt_closed_loop_assignments(config: Dict[str, Any], console: Any = None)
                     f"Accept detected RFID {known_ids[0]}",
                     "Retry RFID scan",
                     "Enter RFID(s) manually",
-                    "Clear assignment",
+                    "Cancel launch",
                 ]
             elif known_ids:
                 options = [
-                    "Keep current assignment" if current_ids else "Leave unassigned",
+                    "Keep current assignment" if current_ids else "[dim]Keep current assignment[/dim]",
                     "Choose from discovered RFID candidates",
                     "Retry RFID scan",
-                    "Clear assignment",
+                    "Enter RFID(s) manually",
+                    "Cancel launch",
                 ]
             else:
                 options = [
-                    "Keep current assignment" if current_ids else "Leave unassigned",
+                    "Keep current assignment" if current_ids else "[dim]Keep current assignment[/dim]",
                     "Retry RFID scan",
                     "Enter RFID(s) manually",
-                    "Clear assignment",
+                    "Cancel launch",
                 ]
             choice = _select_from_labels(
                 console,
@@ -1319,10 +1354,10 @@ def _prompt_closed_loop_assignments(config: Dict[str, Any], console: Any = None)
                     discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
                     continue
                 if choice == 2:
-                    entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
+                    entered = _prompt("Enter RFID(s), comma-separated; blank leaves this rule unassigned and blocks launch")
                     updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
                     break
-                updated_rules[idx]["assigned_animal_ids"] = []
+                updated_rules[idx]["assigned_animal_ids"] = current_ids
                 break
             if known_ids:
                 if choice == 0:
@@ -1334,7 +1369,11 @@ def _prompt_closed_loop_assignments(config: Dict[str, Any], console: Any = None)
                 if choice == 2:
                     discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
                     continue
-                updated_rules[idx]["assigned_animal_ids"] = []
+                if choice == 3:
+                    entered = _prompt("Enter RFID(s), comma-separated; blank leaves this rule unassigned and blocks launch")
+                    updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
+                    break
+                updated_rules[idx]["assigned_animal_ids"] = current_ids
                 break
             if choice == 0:
                 updated_rules[idx]["assigned_animal_ids"] = current_ids
@@ -1343,10 +1382,10 @@ def _prompt_closed_loop_assignments(config: Dict[str, Any], console: Any = None)
                 discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
                 continue
             if choice == 2:
-                entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
+                entered = _prompt("Enter RFID(s), comma-separated; blank leaves this rule unassigned and blocks launch")
                 updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
                 break
-            updated_rules[idx]["assigned_animal_ids"] = []
+            updated_rules[idx]["assigned_animal_ids"] = current_ids
             break
     return updated
 
@@ -2484,6 +2523,10 @@ def _confirm_arm_and_start(config: Dict[str, Any], live_state: LiveState, consol
     if updated_config is not config:
         config.clear()
         config.update(updated_config)
+    missing_closed_loop_assignments = _closed_loop_unassigned_rule_ids(config)
+    if missing_closed_loop_assignments:
+        _show_closed_loop_assignment_block(console, missing_closed_loop_assignments)
+        return False
     updated_config = _prompt_open_loop_assignments(config, console=console)
     if updated_config is not config:
         config.clear()
