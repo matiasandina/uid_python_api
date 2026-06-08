@@ -1056,12 +1056,18 @@ def _format_animal_ids(ids: List[str]) -> str:
     return ", ".join(ids) if ids else "(none)"
 
 
+def _format_detected_animal_ids(ids: List[str]) -> str:
+    if not ids:
+        return "(none)"
+    return ", ".join(f"[bold green]{animal_id}[/bold green]" for animal_id in ids)
+
+
 def _render_closed_loop_rule_assignment_panel(
     console: Any,
     rule: Dict[str, Any],
     known_ids: List[str],
     current_ids: List[str],
-) -> None:
+) -> List[str]:
     lines = [
         f"[bold cyan]Rule[/bold cyan] {rule.get('id', '?')}",
         f"[bold]Devices:[/bold] {summarize_channel_list(rule.get('devices'))}",
@@ -1070,20 +1076,21 @@ def _render_closed_loop_rule_assignment_panel(
         f"[bold]Current Assignment:[/bold] {_format_animal_ids(current_ids)}",
     ]
     if known_ids:
-        lines.append(f"[bold]Known RFID candidates:[/bold] {_format_animal_ids(known_ids)}")
+        lines.append(f"[bold]Detected RFID candidates:[/bold] {_format_detected_animal_ids(known_ids)}")
     else:
-        lines.append("[bold]Known RFID candidates:[/bold] [yellow](none available yet)[/yellow]")
+        lines.append("[bold]Detected RFID candidates:[/bold] [yellow](none available yet)[/yellow]")
         lines.append("You can enter RFIDs manually for this rule.")
 
     if console is None:
         print("=== Closed-Loop Rule Assignment ===")
         for line in lines:
             print(_plain_label(line))
-        return
+        return lines
 
     from rich.panel import Panel
 
     console.print(Panel.fit("\n".join(lines), border_style="cyan", title="[bold cyan]Closed-Loop Rule Assignment[/bold cyan]"))
+    return lines
 
 
 def _build_device_lookup(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -1259,46 +1266,88 @@ def _prompt_closed_loop_assignments(config: Dict[str, Any], console: Any = None)
 
     for idx, rule in enumerate(updated_rules):
         current_ids = _normalize_animal_ids(rule.get("assigned_animal_ids", []))
-        known_ids: List[str] = []
-        seen_known: set[str] = set()
-        for token in rule.get("devices", []):
-            for animal_id in discovery_by_device.get(str(token).strip(), []):
-                if animal_id in seen_known:
+        while True:
+            known_ids: List[str] = []
+            seen_known: set[str] = set()
+            rule_tokens = [str(token).strip() for token in rule.get("devices", []) if str(token).strip()]
+            for token in rule_tokens:
+                for animal_id in discovery_by_device.get(token, []):
+                    if animal_id in seen_known:
+                        continue
+                    seen_known.add(animal_id)
+                    known_ids.append(animal_id)
+            if console is None:
+                print("")
+            else:
+                console.print("")
+            context_lines = _render_closed_loop_rule_assignment_panel(console, rule, known_ids, current_ids)
+            if len(known_ids) == 1:
+                options = [
+                    f"Accept detected RFID {known_ids[0]}",
+                    "Retry RFID scan",
+                    "Enter RFID(s) manually",
+                    "Clear assignment",
+                ]
+            elif known_ids:
+                options = [
+                    "Keep current assignment" if current_ids else "Leave unassigned",
+                    "Choose from discovered RFID candidates",
+                    "Retry RFID scan",
+                    "Clear assignment",
+                ]
+            else:
+                options = [
+                    "Keep current assignment" if current_ids else "Leave unassigned",
+                    "Retry RFID scan",
+                    "Enter RFID(s) manually",
+                    "Clear assignment",
+                ]
+            choice = _select_from_labels(
+                console,
+                f"Assign RFIDs for rule {rule.get('id', '?')}",
+                options,
+                context_lines=context_lines,
+            )
+            if choice is None:
+                updated_rules[idx]["assigned_animal_ids"] = current_ids
+                break
+            if len(known_ids) == 1:
+                if choice == 0:
+                    updated_rules[idx]["assigned_animal_ids"] = list(known_ids)
+                    break
+                if choice == 1:
+                    discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
                     continue
-                seen_known.add(animal_id)
-                known_ids.append(animal_id)
-        if console is None:
-            print("")
-        else:
-            console.print("")
-        _render_closed_loop_rule_assignment_panel(console, rule, known_ids, current_ids)
-        if known_ids:
-            options = [
-                "Keep current assignment",
-                "Choose from discovered RFID candidates",
-                "Clear assignment",
-            ]
-        else:
-            options = [
-                "Keep current assignment",
-                "Enter RFID(s) manually",
-                "Clear assignment",
-            ]
-        choice = _select_from_labels(console, f"Assign RFIDs for rule {rule.get('id', '?')}", options)
-        if choice is None:
-            updated_rules[idx]["assigned_animal_ids"] = current_ids
-            continue
-        if choice == 0:
-            updated_rules[idx]["assigned_animal_ids"] = current_ids
-            continue
-        if known_ids and choice == 1:
-            updated_rules[idx]["assigned_animal_ids"] = _choose_closed_loop_rfid_subset(console, known_ids, current_ids)
-            continue
-        if not known_ids and choice == 1:
-            entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
-            updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
-            continue
-        updated_rules[idx]["assigned_animal_ids"] = []
+                if choice == 2:
+                    entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
+                    updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
+                    break
+                updated_rules[idx]["assigned_animal_ids"] = []
+                break
+            if known_ids:
+                if choice == 0:
+                    updated_rules[idx]["assigned_animal_ids"] = current_ids
+                    break
+                if choice == 1:
+                    updated_rules[idx]["assigned_animal_ids"] = _choose_closed_loop_rfid_subset(console, known_ids, current_ids)
+                    break
+                if choice == 2:
+                    discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
+                    continue
+                updated_rules[idx]["assigned_animal_ids"] = []
+                break
+            if choice == 0:
+                updated_rules[idx]["assigned_animal_ids"] = current_ids
+                break
+            if choice == 1:
+                discovery_by_device.update(_discover_device_rfid_candidates(config, rule_tokens, console=console))
+                continue
+            if choice == 2:
+                entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
+                updated_rules[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
+                break
+            updated_rules[idx]["assigned_animal_ids"] = []
+            break
     return updated
 
 
@@ -1315,9 +1364,9 @@ def _render_open_loop_assignment_panel(
         f"[bold]Current Assignment:[/bold] {_format_animal_ids(current_ids)}",
     ]
     if known_ids:
-        lines.append(f"[bold]Known RFID candidates:[/bold] {_format_animal_ids(known_ids)}")
+        lines.append(f"[bold]Detected RFID candidates:[/bold] {_format_detected_animal_ids(known_ids)}")
     else:
-        lines.append("[bold]Known RFID candidates:[/bold] [yellow](none available yet)[/yellow]")
+        lines.append("[bold]Detected RFID candidates:[/bold] [yellow](none available yet)[/yellow]")
         lines.append("You can enter RFIDs manually for this assignment.")
 
     if console is None:
@@ -1362,7 +1411,14 @@ def _prompt_open_loop_assignments(config: Dict[str, Any], console: Any = None) -
             else:
                 console.print("")
             context_lines = _render_open_loop_assignment_panel(console, assignment, known_ids, current_ids)
-            if known_ids:
+            if len(known_ids) == 1:
+                options = [
+                    f"Accept detected RFID {known_ids[0]}",
+                    "Retry RFID scan",
+                    "Enter RFID(s) manually",
+                    "Clear assignment",
+                ]
+            elif known_ids:
                 options = [
                     "Keep current assignment" if current_ids else "Leave unassigned",
                     "Choose from discovered RFID candidates",
@@ -1383,7 +1439,19 @@ def _prompt_open_loop_assignments(config: Dict[str, Any], console: Any = None) -
                 context_lines=context_lines,
             )
             if choice is None or choice == 0:
-                updated_assignments[idx]["assigned_animal_ids"] = current_ids
+                updated_assignments[idx]["assigned_animal_ids"] = list(known_ids) if len(known_ids) == 1 and choice == 0 else current_ids
+                break
+            if len(known_ids) == 1 and choice == 1:
+                discovery_by_device.update(
+                    _discover_device_rfid_candidates(config, [lookup_token], console=console)
+                )
+                continue
+            if len(known_ids) == 1 and choice == 2:
+                entered = _prompt("Enter RFID(s), comma-separated, blank to clear")
+                updated_assignments[idx]["assigned_animal_ids"] = _normalize_animal_ids(entered)
+                break
+            if len(known_ids) == 1:
+                updated_assignments[idx]["assigned_animal_ids"] = []
                 break
             if known_ids and choice == 1:
                 updated_assignments[idx]["assigned_animal_ids"] = _choose_closed_loop_rfid_subset(console, known_ids, current_ids)

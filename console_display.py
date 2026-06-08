@@ -726,48 +726,38 @@ class ConsoleDisplay:
         stim_tag = f"{stim_state} (enabled={stim_enabled} mode={stim_mode})"
 
         table = self._Table(
-            title=f"Closed-Loop Rules ({rule_count} rule(s), stim={stim_tag})",
+            title=f"Closed-Loop Status ({rule_count} rule(s), stim={stim_tag})",
             title_style="bold white",
-            show_lines=False,
+            show_lines=True,
             expand=True,
             header_style="bold magenta",
-            box=self._box.MINIMAL,
-            row_styles=["none", "dim"],
+            box=self._box.MINIMAL_HEAVY_HEAD,
         )
-        table.add_column("Rule", style="bold")
-        table.add_column("Device(s)")
-        table.add_column("RFID", style="bold")
-        table.add_column("Outputs")
-        table.add_column("Condition", justify="center")
-        table.add_column("Avg Temp", justify="right")
-        table.add_column("Samples", justify="right")
-        table.add_column("Last Action", justify="center")
-        table.add_column("Triggers", justify="right")
-        table.add_column("Last Event")
-        table.add_column("Reason")
+        table.add_column("Field", style="bold cyan", width=16, no_wrap=True)
+        table.add_column("Value", style="white", ratio=1)
 
         for status_key in status_keys_page:
             status = statuses[status_key]
             condition_text = self._Text("TRUE" if status.condition_true else "FALSE")
-            condition_text.stylize("bold green" if status.condition_true else "yellow")
+            condition_text.stylize("bold green" if status.condition_true else "bold yellow")
             avg_temp = f"{status.current_avg_temp:.2f}" if status.current_avg_temp is not None else "-"
             last_event = status.last_event_time.strftime("%Y-%m-%d %I:%M:%S%p").lower() if status.last_event_time else "-"
-            table.add_row(
-                status.rule_id or "-",
-                ",".join(status.device_names) or "-",
-                status.animal_id,
-                ",".join(status.target_channels) or "-",
-                condition_text,
-                avg_temp,
-                str(status.sample_count),
-                status.last_action,
-                str(status.trigger_count),
-                last_event,
-                status.reason,
-            )
+            table.add_row("Rule", self._Text(status.rule_id or "-", style="bold white"))
+            table.add_row("RFID", self._Text(status.animal_id, style="bold white"))
+            table.add_row("Device(s)", ",".join(status.device_names) or "-")
+            table.add_row("Outputs", self._Text(",".join(status.target_channels) or "-", style="bold white"))
+            table.add_row("Condition", condition_text)
+            table.add_row("Avg Temp", avg_temp)
+            table.add_row("Samples", str(status.sample_count))
+            table.add_row("Last Action", self._Text(status.last_action, style="bold white"))
+            table.add_row("Triggers", str(status.trigger_count))
+            table.add_row("Last Event", last_event)
+            table.add_row("Reason", status.reason or "-")
 
         if not statuses:
-            table.add_row("No trigger evaluations yet", "", "", "", "", "", "", "", "", "")
+            table.add_row("Status", "No trigger evaluations yet")
+            table.add_row("Meaning", "Waiting for matching RFID readings before classifier output can be shown.")
+            table.add_row("Stim Ready", "READY means hardware is armed; output starts only after a trigger event.")
 
         return self._Panel(table, border_style="magenta", box=self._box.ROUNDED)
 
