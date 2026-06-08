@@ -620,6 +620,7 @@ def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
         action = str(event.get("action", "")).lower()
         timestamp = str(event.get("timestamp", ""))
         reason = str(event.get("reason", ""))
+        is_global_stop = action in {"stop", "stop_all"} and not event_channels and _is_global_stop_event(event, meta)
 
         for channel_name in event_channels:
             if action == "start":
@@ -641,7 +642,34 @@ def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
                         stop_reason=reason,
                     )
                 )
+        if is_global_stop:
+            for channel_name, start in sorted(active.items()):
+                windows.append(
+                    CommandWindow(
+                        channel_name=channel_name,
+                        start_monotonic_ns=int(start["start_monotonic_ns"]),
+                        stop_monotonic_ns=recorded_monotonic_ns,
+                        start_timestamp=str(start["start_timestamp"]),
+                        stop_timestamp=timestamp,
+                        start_reason=str(start["start_reason"]),
+                        stop_reason=reason,
+                    )
+                )
+            active.clear()
     return windows
+
+
+def _is_global_stop_event(event: Dict[str, Any], meta: Dict[str, Any]) -> bool:
+    animal_id = str(event.get("animal_id", ""))
+    rule_id = str(event.get("rule_id", ""))
+    reason = str(event.get("reason", "")).lower()
+    source = str(meta.get("source", "")).lower()
+    return (
+        animal_id == "__system__"
+        or rule_id == "__cleanup__"
+        or "stop_all" in reason
+        or source == "device_manager.stop"
+    )
 
 
 def summarize_edges_by_channel(
