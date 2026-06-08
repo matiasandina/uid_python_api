@@ -16,7 +16,7 @@ File roles:
 
 Overlay policy:
 - overlays must not define machine-local fields
-- overlays should contain only experiment/protocol values, including `stimulus.channels` when channel selection and current are run-specific
+- overlays should contain only experiment/protocol values, including `data.averaging_window_seconds` for closed-loop history retention and `stimulus.channels` when channel selection and current are run-specific
 - if an overlay includes machine-local fields, loading fails
 
 ## High-Impact Fields

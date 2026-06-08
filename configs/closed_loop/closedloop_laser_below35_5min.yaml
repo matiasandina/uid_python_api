@@ -1,0 +1,48 @@
+session_description: "closedloop_laser_below35_5min"
+
+data:
+  averaging_window_seconds: 330.0
+
+closed_loop:
+  rules:
+    - id: "box1"
+      devices: ["Reader-1"]
+      classifier:
+        plugin: "classifiers.threshold_duration:evaluate"
+        evaluate_interval_seconds: 5.0
+        clf_data_input_window_seconds: 300.0
+        missing_animal_seconds: 120.0
+        mode: "window"
+        config:
+          direction: "below"
+          threshold_c: 35.0
+          required_duration_seconds: 300.0
+          min_samples: 20
+          aggregation: "mean"
+          stimulus_id: "below_35_c_5min"
+      outputs:
+        laser_channels: ["ch1"]
+
+stimulus:
+  enabled: true
+  mode: "laser"
+  control_mode: "closed_loop"
+  channels:
+    ch1:
+      current_ma: 50
+  window_on_seconds: 1.0
+  pulse:
+    period_ms: 50
+    time_on_ms: 10
+  train:
+    on_seconds: 1.0
+    off_seconds: 3.0
+  square:
+    nb_of_seq: 0
+    nb_of_pulses_per_seq: 0
+    starting_delay_ms: 0
+    delay_between_seq_ms: 0
+    ttl_output: true
+
+ttl_capture:
+  enabled: true

@@ -23,7 +23,6 @@ FORBIDDEN_OVERLAY_PATHS = {
     "output_directory",
     "display",
     "network",
-    "data",
     "stimulus.dll_path",
     "stimulus.discovery",
     "stimulus.port",

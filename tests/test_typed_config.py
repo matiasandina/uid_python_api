@@ -71,7 +71,7 @@ class TypedConfigTests(unittest.TestCase):
                 load_config(str(overlay_path), require_local=False)
 
     def test_open_loop_requires_protocol_fields(self):
-        with self.assertRaisesRegex(ValueError, "stimulus.target_channels must be non-empty"):
+        with self.assertRaisesRegex(ValueError, "stimulus.target_channels or stimulus.open_loop_assignments must be non-empty"):
             validate_config(
                 {
                     "output_directory": "./data",
@@ -149,6 +149,7 @@ class TypedConfigTests(unittest.TestCase):
     def test_overlay_current_ma_merges_with_legacy_numeric_channel_map(self):
         legacy_local = {
             "output_directory": "./data",
+            "devices": [{"host": "10.0.0.1", "port": 10001, "name": "Reader-1"}],
             "stimulus": {
                 "dll_path": "C:/Doric/DoricSystem.dll",
                 "channels": {
@@ -363,6 +364,9 @@ class TypedConfigTests(unittest.TestCase):
             Path("configs/open_loop/openloop_10hz.yaml"),
             Path("configs/open_loop/openloop_20hz.yaml"),
             Path("configs/closed_loop/stim_below35.yaml"),
+            Path("configs/closed_loop/closedloop_monitor_below33_30s.yaml"),
+            Path("configs/closed_loop/closedloop_laser_below33_30s.yaml"),
+            Path("configs/closed_loop/closedloop_laser_below35_5min.yaml"),
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             local_path = Path(tmpdir) / "config.local.yaml"
