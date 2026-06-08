@@ -75,6 +75,71 @@ class TTLSessionVerifyTests(unittest.TestCase):
         self.assertAlmostEqual(report.sample_coverage.session_sample_coverage_ratio, 0.03)
         self.assertFalse(report.continuity.frame_index_present)
 
+    def test_verify_session_matches_closed_loop_animal_command_window(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session_dir = root / "2026_06_08_12_37_43_test_closed_loop"
+            session_dir.mkdir()
+            metadata_path = session_dir / "session.yaml"
+
+            ttl_meta = {
+                "sampling_rate_hz": 1000,
+                "frame_size": 10,
+                "channel_map": [1, 2, 3, 4],
+                "t0_monotonic_ns": 0,
+                "t0_frame_id": 0,
+            }
+            (session_dir / "ttl_meta.json").write_text(json.dumps(ttl_meta), encoding="utf-8")
+
+            payload = bytes([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+            ])
+            (session_dir / "ttl_raw.bin").write_bytes(payload)
+
+            metadata = {
+                "session": {
+                    "start_time": "2026-06-08T12:37:43",
+                    "end_time": "2026-06-08T12:37:44",
+                },
+                "triggers_by_animal": {
+                    "ABC123": [
+                        {
+                            "action": "start",
+                            "rule_id": "box1",
+                            "reason": "window ready; mean below threshold",
+                            "timestamp": "2026-06-08T12:37:43",
+                            "meta": {
+                                "channels": ["ch1"],
+                                "rule_id": "box1",
+                                "recorded_monotonic_ns": 5_000_000,
+                            },
+                        },
+                        {
+                            "action": "stop",
+                            "rule_id": "box1",
+                            "reason": "window ready; mean not below threshold",
+                            "timestamp": "2026-06-08T12:37:44",
+                            "meta": {
+                                "channels": ["ch1"],
+                                "rule_id": "box1",
+                                "recorded_monotonic_ns": 25_000_000,
+                            },
+                        },
+                    ]
+                },
+            }
+            metadata_path.write_text(yaml.safe_dump(metadata, sort_keys=False), encoding="utf-8")
+
+            report = verify_session(metadata_path, tolerance_ms=0.0)
+
+        self.assertEqual(report.windows_verified, 1)
+        self.assertEqual(report.windows_ok, 1)
+        self.assertEqual(report.stray_rising_edges, 0)
+        self.assertEqual(report.window_results[0].channel_name, "ch1")
+        self.assertEqual(report.window_results[0].pulse_count, 2)
+
     def test_verify_session_reports_stray_edges_outside_window(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

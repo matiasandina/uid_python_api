@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -295,7 +296,6 @@ def load_ttl_edges(
     t0_monotonic_ns = int(ttl_meta.get("t0_monotonic_ns", 0) or 0)
     channel_map = [int(v) for v in ttl_meta.get("channel_map", [1, 2, 3, 4])]
     channels = min(4, len(channel_map))
-    channels = min(4, len(channel_map))
     _emit_progress(progress, f"Loaded `{raw_path.name}` with {raw.size} samples")
     if raw.size == 0:
         return []
@@ -586,16 +586,26 @@ def extract_command_windows(payload: Dict[str, Any]) -> List[CommandWindow]:
     if not isinstance(grouped, dict):
         return []
 
-    open_loop_events = grouped.get("__open_loop__", [])
-    if not isinstance(open_loop_events, list):
-        return []
+    events: List[Dict[str, Any]] = []
+    for animal_events in grouped.values():
+        if not isinstance(animal_events, list):
+            continue
+        for event in animal_events:
+            if isinstance(event, dict):
+                events.append(event)
+
+    def event_sort_key(event: Dict[str, Any]) -> tuple[int, str]:
+        meta = event.get("meta", {})
+        monotonic_ns = meta.get("recorded_monotonic_ns") if isinstance(meta, dict) else None
+        try:
+            return int(monotonic_ns), str(event.get("timestamp", ""))
+        except Exception:
+            return sys.maxsize, str(event.get("timestamp", ""))
 
     active: Dict[str, Dict[str, Any]] = {}
     windows: List[CommandWindow] = []
 
-    for event in open_loop_events:
-        if not isinstance(event, dict):
-            continue
+    for event in sorted(events, key=event_sort_key):
         meta = event.get("meta", {})
         if not isinstance(meta, dict):
             continue
