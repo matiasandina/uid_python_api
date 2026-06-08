@@ -38,6 +38,7 @@ class ConsoleDisplay:
     # Display constants
     DEFAULT_REFRESH_HZ = 60
     DEFAULT_PAGE_SIZE = 12
+    TRIGGER_PAGE_SIZE = 1
     MIN_UI_WIDTH = 132
     MIN_UI_HEIGHT = 34
     
@@ -321,7 +322,7 @@ class ConsoleDisplay:
             1,
             math.ceil(device_count / self._page_size),
             math.ceil(animal_count / self._page_size),
-            math.ceil(trigger_count / self._page_size),
+            math.ceil(trigger_count / self.TRIGGER_PAGE_SIZE),
         )
         with self._page_lock:
             if self._page_index >= page_count:
@@ -332,6 +333,12 @@ class ConsoleDisplay:
         with self._page_lock:
             start = page_index * self._page_size
             end = start + self._page_size
+            return start, end
+
+    def _get_trigger_page_bounds(self, total_items: int, page_index: int) -> tuple[int, int]:
+        with self._page_lock:
+            start = page_index * self.TRIGGER_PAGE_SIZE
+            end = start + self.TRIGGER_PAGE_SIZE
             return start, end
     
     # endregion
@@ -716,7 +723,7 @@ class ConsoleDisplay:
 
         statuses = self._manager.get_trigger_statuses()
         status_keys = sorted(statuses.keys())
-        start, end = self._get_page_bounds(len(status_keys), page_index)
+        start, end = self._get_trigger_page_bounds(len(status_keys), page_index)
         status_keys_page = status_keys[start:end]
         rule_count = len(self._manager._closed_loop_config.get("rules", []))
         stim_status = self._manager.get_stimulus_status()
@@ -738,21 +745,25 @@ class ConsoleDisplay:
 
         for status_key in status_keys_page:
             status = statuses[status_key]
-            condition_text = self._Text("TRUE" if status.condition_true else "FALSE")
-            condition_text.stylize("bold green" if status.condition_true else "bold yellow")
+            decision_text = self._Text("TRIGGER" if status.condition_true else "WAITING")
+            decision_text.stylize("bold green" if status.condition_true else "bold yellow")
             avg_temp = f"{status.current_avg_temp:.2f}" if status.current_avg_temp is not None else "-"
             last_event = status.last_event_time.strftime("%Y-%m-%d %I:%M:%S%p").lower() if status.last_event_time else "-"
+            window_text = self._format_closed_loop_window(status)
+            sample_text = self._format_closed_loop_samples(status)
+            threshold_text = self._format_closed_loop_threshold(status, avg_temp)
             table.add_row("Rule", self._Text(status.rule_id or "-", style="bold white"))
-            table.add_row("RFID", self._Text(status.animal_id, style="bold white"))
+            table.add_row("Probe RFID", self._Text(status.animal_id, style="bold white"))
             table.add_row("Device(s)", ",".join(status.device_names) or "-")
             table.add_row("Outputs", self._Text(",".join(status.target_channels) or "-", style="bold white"))
-            table.add_row("Condition", condition_text)
-            table.add_row("Avg Temp", avg_temp)
-            table.add_row("Samples", str(status.sample_count))
+            table.add_row("Decision", decision_text)
+            table.add_row("Window", window_text)
+            table.add_row("Samples", sample_text)
+            table.add_row("Threshold", threshold_text)
             table.add_row("Last Action", self._Text(status.last_action, style="bold white"))
             table.add_row("Triggers", str(status.trigger_count))
             table.add_row("Last Event", last_event)
-            table.add_row("Reason", status.reason or "-")
+            table.add_row("Status", status.reason or "-")
 
         if not statuses:
             table.add_row("Status", "No trigger evaluations yet")
@@ -760,6 +771,40 @@ class ConsoleDisplay:
             table.add_row("Stim Ready", "READY means hardware is armed; output starts only after a trigger event.")
 
         return self._Panel(table, border_style="magenta", box=self._box.ROUNDED)
+
+    def _format_closed_loop_window(self, status: Any) -> str:
+        observed = getattr(status, "observed_duration_seconds", None)
+        required = getattr(status, "required_duration_seconds", None)
+        tolerance = getattr(status, "coverage_tolerance_seconds", None)
+        ready = getattr(status, "coverage_ready", None)
+        if observed is None or required is None:
+            return "-"
+        label = f"{observed:.1f} / {required:.1f} s"
+        if tolerance:
+            label += f" (+{tolerance:.1f}s tol)"
+        if ready is not None:
+            label += " READY" if ready else " collecting"
+        return label
+
+    def _format_closed_loop_samples(self, status: Any) -> str:
+        sample_count = getattr(status, "sample_count", 0)
+        min_samples = getattr(status, "min_samples", None)
+        if min_samples is None:
+            return str(sample_count)
+        return f"{sample_count} / {min_samples}"
+
+    def _format_closed_loop_threshold(self, status: Any, avg_temp: str) -> str:
+        threshold = getattr(status, "threshold_c", None)
+        direction = str(getattr(status, "direction", "") or "below")
+        aggregation = str(getattr(status, "aggregation", "") or "mean")
+        threshold_met = getattr(status, "threshold_met", None)
+        if threshold is None or avg_temp == "-":
+            return "-"
+        comparator = ">" if direction == "above" else "<"
+        label = f"{aggregation} {avg_temp} {comparator} {threshold:g}"
+        if threshold_met is not None:
+            label += " TRUE" if threshold_met else " FALSE"
+        return label
 
     def _render_open_loop_table(self) -> Any:
         """Render open-loop stimulation status panel."""

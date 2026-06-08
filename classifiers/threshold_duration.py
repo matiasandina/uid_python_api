@@ -85,17 +85,15 @@ def evaluate(
 
     condition_true = coverage_ready and threshold_met
     stimulus_id = str(config.get("stimulus_id", f"{direction}_{threshold:g}c"))
-    comparator = ">" if direction == "above" else "<"
     if not coverage_ready:
-        reason = (
-            f"warming up: observed {observed_duration:.1f}s/{required_duration:.1f}s "
-            f"(tolerance {coverage_tolerance_seconds:.1f}s) and {len(temps)}/{min_samples} samples"
-        )
+        if len(temps) < min_samples:
+            reason = "waiting for samples"
+        else:
+            reason = "collecting window"
     elif threshold_met:
-        reason = f"{aggregation} temp {direction} threshold ({avg_temp:.2f} {comparator} {threshold:g})"
+        reason = f"window ready; {aggregation} {direction} threshold"
     else:
-        inverse = "<=" if direction == "above" else ">="
-        reason = f"{aggregation} temp not {direction} threshold ({avg_temp:.2f} {inverse} {threshold:g})"
+        reason = f"window ready; {aggregation} not {direction} threshold"
 
     return {
         "trigger": condition_true,

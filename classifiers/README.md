@@ -96,3 +96,10 @@ This means: do not even consider triggering until the animal/probe has readings 
 ```
 
 Coverage is 300 seconds, but sample count is only 2. With `min_samples: 20`, this does not trigger.
+
+Runtime status phrases are intentionally short:
+
+- `waiting for samples`: not enough samples for the rule yet
+- `collecting window`: enough samples are present, but observed time coverage is still too short
+- `window ready; mean below threshold`: the configured aggregation satisfies the threshold
+- `window ready; mean not below threshold`: the configured aggregation does not satisfy the threshold

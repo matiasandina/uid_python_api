@@ -40,6 +40,15 @@ class TriggerAnimalStatus:
     condition_true: bool
     current_avg_temp: Optional[float]
     sample_count: int
+    observed_duration_seconds: Optional[float]
+    required_duration_seconds: Optional[float]
+    coverage_tolerance_seconds: Optional[float]
+    threshold_c: Optional[float]
+    direction: str
+    aggregation: str
+    threshold_met: Optional[bool]
+    coverage_ready: Optional[bool]
+    min_samples: Optional[int]
     last_action: str
     stimulus_id: str
     reason: str
@@ -275,6 +284,43 @@ class TriggerScheduler:
             condition_true=bool(result_dict.get("condition_true", result_dict.get("trigger", False))),
             current_avg_temp=(float(meta["avg_temp"]) if isinstance(meta, dict) and "avg_temp" in meta else None),
             sample_count=(int(meta["count"]) if isinstance(meta, dict) and "count" in meta else 0),
+            observed_duration_seconds=(
+                float(meta["observed_duration_seconds"])
+                if isinstance(meta, dict) and meta.get("observed_duration_seconds") is not None
+                else None
+            ),
+            required_duration_seconds=(
+                float(meta["required_duration_seconds"])
+                if isinstance(meta, dict) and meta.get("required_duration_seconds") is not None
+                else None
+            ),
+            coverage_tolerance_seconds=(
+                float(meta["coverage_tolerance_seconds"])
+                if isinstance(meta, dict) and meta.get("coverage_tolerance_seconds") is not None
+                else None
+            ),
+            threshold_c=(
+                float(meta["threshold_c"])
+                if isinstance(meta, dict) and meta.get("threshold_c") is not None
+                else None
+            ),
+            direction=str(meta.get("direction", "")) if isinstance(meta, dict) else "",
+            aggregation=str(meta.get("aggregation", "")) if isinstance(meta, dict) else "",
+            threshold_met=(
+                bool(meta["threshold_met"])
+                if isinstance(meta, dict) and meta.get("threshold_met") is not None
+                else None
+            ),
+            coverage_ready=(
+                bool(meta["coverage_ready"])
+                if isinstance(meta, dict) and meta.get("coverage_ready") is not None
+                else None
+            ),
+            min_samples=(
+                int(meta["min_samples"])
+                if isinstance(meta, dict) and meta.get("min_samples") is not None
+                else None
+            ),
             last_action=(event.action if event else (prev.last_action if prev else "none")),
             stimulus_id=str(result_dict.get("stimulus_id", self._classifier_config.get("stimulus_id", ""))),
             reason=str(result_dict.get("reason", prev.reason if prev else "")),

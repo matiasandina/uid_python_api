@@ -127,6 +127,15 @@ This means: do not even consider triggering until the animal/probe has readings 
 
 Coverage is 300 seconds, but sample count is only 2. With `min_samples: 20`, this does not trigger.
 
+Runtime status phrases are intentionally short:
+
+- `waiting for samples`: not enough samples for the rule yet
+- `collecting window`: enough samples are present, but observed time coverage is still too short
+- `window ready; mean below threshold`: the configured aggregation satisfies the threshold
+- `window ready; mean not below threshold`: the configured aggregation does not satisfy the threshold
+
+The live Closed-Loop Status panel shows one probe/rule status per page. Use Left/Right arrows to page through additional probes or rules.
+
 ## Session-Specific Animal Assignment
 
 During preflight, closed-loop runs may ask you to assign RFID(s) to each rule
