@@ -171,9 +171,24 @@ class TriggerScheduler:
                     self._last_missing_emitted[animal.animal_id] = now
                     if self._on_missing:
                         self._on_missing(self._rule_id, animal.animal_id, seconds_since)
+                self._handle_no_evidence(
+                    animal_id=animal.animal_id,
+                    now=now,
+                    reason=f"missing data; last seen {seconds_since:.0f}s ago",
+                    meta={
+                        "seconds_since_last_scan": seconds_since,
+                        "missing_animal_seconds": self._missing_animal_seconds,
+                    },
+                )
+                continue
 
             readings = animal.get_readings_in_window()
             if not readings:
+                self._handle_no_evidence(
+                    animal_id=animal.animal_id,
+                    now=now,
+                    reason="no readings available",
+                )
                 continue
             window_readings = [
                 r
@@ -181,6 +196,11 @@ class TriggerScheduler:
                 if r.timestamp >= cutoff and (not self._device_names or getattr(r, "device_name", None) in self._device_names)
             ]
             if not window_readings:
+                self._handle_no_evidence(
+                    animal_id=animal.animal_id,
+                    now=now,
+                    reason="no readings in classifier input window",
+                )
                 continue
 
             readings_payload = [
@@ -214,6 +234,43 @@ class TriggerScheduler:
             if event and self._on_trigger:
                 self._on_trigger(event)
 
+    def _handle_no_evidence(
+        self,
+        animal_id: str,
+        now: datetime,
+        reason: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self._trigger_mode != "window":
+            return
+        result = {
+            "trigger": False,
+            "condition_true": False,
+            "action": "stop",
+            "stimulus_id": str(self._classifier_config.get("stimulus_id", "")),
+            "reason": reason,
+            "meta": {
+                "animal_id": animal_id,
+                "count": 0,
+                "coverage_ready": False,
+                "threshold_met": False,
+                **(meta or {}),
+            },
+        }
+        event = self._build_event_for_mode(
+            animal_id=animal_id,
+            result=result,
+            now=now,
+        )
+        self._update_status(
+            animal_id=animal_id,
+            result=result,
+            event=event,
+            now=now,
+        )
+        if event and self._on_trigger:
+            self._on_trigger(event)
+
     def _build_event_for_mode(
         self,
         animal_id: str,
@@ -245,7 +302,7 @@ class TriggerScheduler:
                     rule_id=self._rule_id,
                     action="stop",
                     stimulus_id=stimulus_id,
-                    reason="condition false",
+                    reason=str(result_dict.get("reason", "condition false")),
                     meta=self._build_event_meta(result_dict),
                     timestamp=now,
                 )
