@@ -10,7 +10,7 @@ closed_loop:
       classifier:
         plugin: "classifiers.threshold_duration:evaluate"
         evaluate_interval_seconds: 5.0
-        clf_data_input_window_seconds: 300.0
+        clf_data_input_window_seconds: 330.0
         missing_animal_seconds: 120.0
         mode: "window"
         config:

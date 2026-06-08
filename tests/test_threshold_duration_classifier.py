@@ -108,6 +108,55 @@ class ThresholdDurationClassifierTests(unittest.TestCase):
         self.assertTrue(result["meta"]["coverage_ready"])
         self.assertEqual(result["meta"]["coverage_tolerance_seconds"], 1.0)
 
+    def test_extra_input_buffer_is_cropped_to_required_duration(self):
+        now = datetime(2026, 6, 9, 10, 0, 0)
+        result = evaluate(
+            "ABC123",
+            [
+                reading(now - timedelta(seconds=40), 40.0),
+                reading(now - timedelta(seconds=30), 32.0),
+                reading(now - timedelta(seconds=20), 32.5),
+                reading(now - timedelta(seconds=10), 32.0),
+                reading(now, 32.0),
+            ],
+            now,
+            {
+                "direction": "below",
+                "threshold_c": 33.0,
+                "required_duration_seconds": 30.0,
+                "min_samples": 4,
+                "aggregation": "mean",
+            },
+        )
+
+        self.assertTrue(result["trigger"])
+        self.assertEqual(result["meta"]["input_count"], 5)
+        self.assertEqual(result["meta"]["count"], 4)
+        self.assertLess(result["meta"]["avg_temp"], 33.0)
+
+    def test_below_33_troubleshooting_profile_waits_for_four_samples(self):
+        now = datetime(2026, 6, 9, 10, 0, 0)
+        result = evaluate(
+            "ABC123",
+            [
+                reading(now - timedelta(seconds=30), 32.0),
+                reading(now - timedelta(seconds=15), 32.5),
+                reading(now, 32.0),
+            ],
+            now,
+            {
+                "direction": "below",
+                "threshold_c": 33.0,
+                "required_duration_seconds": 30.0,
+                "min_samples": 4,
+                "aggregation": "mean",
+            },
+        )
+
+        self.assertFalse(result["trigger"])
+        self.assertFalse(result["meta"]["coverage_ready"])
+        self.assertEqual(result["reason"], "waiting for samples")
+
     def test_coverage_tolerance_does_not_allow_clearly_short_windows(self):
         now = datetime(2026, 6, 9, 10, 0, 0)
         result = evaluate(

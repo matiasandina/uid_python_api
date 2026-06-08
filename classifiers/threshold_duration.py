@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 
@@ -66,6 +66,13 @@ def evaluate(
     min_fraction_true = min(1.0, max(0.0, min_fraction_true))
 
     sorted_readings = sorted(window_readings, key=lambda r: r["timestamp"])
+    input_count = len(sorted_readings)
+    if required_duration > 0:
+        latest_input = sorted_readings[-1]["timestamp"]
+        evidence_cutoff = latest_input - timedelta(seconds=required_duration)
+        sorted_readings = [r for r in sorted_readings if r["timestamp"] >= evidence_cutoff]
+        if not sorted_readings:
+            return None
     temps = [float(r["temperature"]) for r in sorted_readings]
     avg_temp = sum(temps) / len(temps)
     earliest = sorted_readings[0]["timestamp"]
@@ -104,6 +111,7 @@ def evaluate(
         "meta": {
             "avg_temp": avg_temp,
             "count": len(temps),
+            "input_count": input_count,
             "threshold_c": threshold,
             "direction": direction,
             "aggregation": aggregation,

@@ -10,14 +10,14 @@ closed_loop:
       classifier:
         plugin: "classifiers.threshold_duration:evaluate"
         evaluate_interval_seconds: 1.0
-        clf_data_input_window_seconds: 30.0
+        clf_data_input_window_seconds: 45.0
         missing_animal_seconds: 120.0
         mode: "window"
         config:
           direction: "below"
           threshold_c: 33.0
           required_duration_seconds: 30.0
-          min_samples: 3
+          min_samples: 4
           coverage_tolerance_seconds: 1.0
           aggregation: "mean"
           stimulus_id: "below_33_c_30s"
