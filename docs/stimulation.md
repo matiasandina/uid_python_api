@@ -21,6 +21,7 @@ That means the existing default behavior is "hardware pulse shape, software trai
 - Rules are matched to configured device names/IPs.
 - If a rule fires, only that rule's configured output channels are stimulated.
 - Optional session-specific RFID assignment can narrow a rule to one or more animals during preflight.
+- In `classifier.mode=window`, a `start` event begins the configured software train envelope and repeats `stimulus.train.on_seconds` / `stimulus.train.off_seconds` while the condition remains true. A `stop` event cancels that train and stops the channel.
 
 ## Open-Loop
 

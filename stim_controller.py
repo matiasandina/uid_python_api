@@ -51,6 +51,7 @@ class StimulationController:
         self._lock = threading.Lock()
         self._timers: Dict[str, threading.Timer] = {}
         self._next_allowed_at: Dict[str, float] = {}
+        self._active_window_channels: set[str] = set()
         self._state = self.STATE_DISABLED if not config.enabled else self.STATE_READY
         self._fault_reason: Optional[str] = None
 
@@ -120,6 +121,7 @@ class StimulationController:
             for timer in self._timers.values():
                 timer.cancel()
             self._timers.clear()
+            self._active_window_channels.clear()
         try:
             self._config.driver.stop_all()
         except Exception as exc:
@@ -165,15 +167,18 @@ class StimulationController:
         try:
             if action == "start":
                 for channel in channels:
-                    self._config.driver.start_channel(channel)
+                    self._start_window_channel(channel)
             elif action == "stop":
                 for channel in channels:
-                    self._config.driver.stop_channel(channel)
+                    self._stop_window_channel(channel)
             else:
                 for channel in channels:
                     self._pulse_or_train_channel(channel)
             with self._lock:
-                self._state = self.STATE_ACTIVE
+                if action == "stop" and not self._active_window_channels and not self._timers:
+                    self._state = self.STATE_READY
+                else:
+                    self._state = self.STATE_ACTIVE
         except Exception as exc:
             self._enter_fault("stim trigger action failed", exc)
 
@@ -194,6 +199,52 @@ class StimulationController:
             self._timers[channel_name] = timer
             timer.start()
             self._next_allowed_at[channel_name] = tnow + duration + max(0.0, cooldown)
+
+    def _start_window_channel(self, channel_name: str) -> None:
+        with self._lock:
+            if channel_name in self._active_window_channels:
+                return
+            self._active_window_channels.add(channel_name)
+        self._start_window_train_on(channel_name)
+
+    def _stop_window_channel(self, channel_name: str) -> None:
+        with self._lock:
+            self._active_window_channels.discard(channel_name)
+            existing = self._timers.pop(channel_name, None)
+            if existing:
+                existing.cancel()
+        self._config.driver.stop_channel(channel_name)
+
+    def _start_window_train_on(self, channel_name: str) -> None:
+        duration = self._config.train_on_seconds or self._config.window_on_seconds
+        cooldown = self._config.train_off_seconds
+        with self._lock:
+            if channel_name not in self._active_window_channels:
+                return
+            self._config.driver.start_channel(channel_name)
+            existing = self._timers.pop(channel_name, None)
+            if existing:
+                existing.cancel()
+            if cooldown <= 0:
+                return
+            timer = threading.Timer(duration, self._finish_window_train_on, args=(channel_name,))
+            timer.daemon = True
+            self._timers[channel_name] = timer
+            timer.start()
+
+    def _finish_window_train_on(self, channel_name: str) -> None:
+        cooldown = self._config.train_off_seconds
+        with self._lock:
+            self._timers.pop(channel_name, None)
+            if channel_name not in self._active_window_channels:
+                return
+            self._config.driver.stop_channel(channel_name)
+            if cooldown <= 0:
+                return
+            timer = threading.Timer(cooldown, self._start_window_train_on, args=(channel_name,))
+            timer.daemon = True
+            self._timers[channel_name] = timer
+            timer.start()
 
     def _resolve_channels(self, event: Any) -> List[str]:
         meta = getattr(event, "meta", {})
