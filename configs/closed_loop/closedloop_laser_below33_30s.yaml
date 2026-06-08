@@ -18,6 +18,7 @@ closed_loop:
           threshold_c: 33.0
           required_duration_seconds: 30.0
           min_samples: 3
+          coverage_tolerance_seconds: 1.0
           aggregation: "mean"
           stimulus_id: "below_33_c_30s"
       outputs:

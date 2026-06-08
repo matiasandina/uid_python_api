@@ -40,6 +40,7 @@ def evaluate(
         - required_duration_seconds: float
         - min_samples: int
         - min_coverage_fraction: float, default 1.0
+        - coverage_tolerance_seconds: float, default 1.0
         - aggregation: "mean", "all", or "fraction"
         - min_fraction_true: float, used when aggregation="fraction"
     """
@@ -57,6 +58,7 @@ def evaluate(
     min_samples = max(1, _as_int(config.get("min_samples"), 1))
     min_coverage_fraction = _as_float(config.get("min_coverage_fraction"), 1.0)
     min_coverage_fraction = min(1.0, max(0.0, min_coverage_fraction))
+    coverage_tolerance_seconds = max(0.0, _as_float(config.get("coverage_tolerance_seconds"), 1.0))
     aggregation = str(config.get("aggregation", "mean")).strip().lower()
     if aggregation not in {"mean", "all", "fraction"}:
         aggregation = "mean"
@@ -70,7 +72,7 @@ def evaluate(
     latest = sorted_readings[-1]["timestamp"]
     observed_duration = max(0.0, (latest - earliest).total_seconds())
     required_coverage = required_duration * min_coverage_fraction
-    coverage_ready = observed_duration >= required_coverage and len(temps) >= min_samples
+    coverage_ready = (observed_duration + coverage_tolerance_seconds) >= required_coverage and len(temps) >= min_samples
 
     matches = [_matches_threshold(temp, threshold, direction) for temp in temps]
     fraction_true = sum(1 for item in matches if item) / len(matches)
@@ -87,7 +89,7 @@ def evaluate(
     if not coverage_ready:
         reason = (
             f"warming up: observed {observed_duration:.1f}s/{required_duration:.1f}s "
-            f"and {len(temps)}/{min_samples} samples"
+            f"(tolerance {coverage_tolerance_seconds:.1f}s) and {len(temps)}/{min_samples} samples"
         )
     elif threshold_met:
         reason = f"{aggregation} temp {direction} threshold ({avg_temp:.2f} {comparator} {threshold:g})"
@@ -112,6 +114,8 @@ def evaluate(
             "coverage_ready": coverage_ready,
             "observed_duration_seconds": observed_duration,
             "required_duration_seconds": required_duration,
+            "coverage_tolerance_seconds": coverage_tolerance_seconds,
+            "required_coverage_seconds": required_coverage,
             "min_samples": min_samples,
             "animal_id": animal_id,
         },

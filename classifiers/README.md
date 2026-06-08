@@ -22,6 +22,7 @@ config:
   threshold_c: 33.0
   required_duration_seconds: 30.0
   min_samples: 3
+  coverage_tolerance_seconds: 1.0
   aggregation: "mean"
 ```
 
@@ -70,6 +71,8 @@ observed_duration >= required_duration_seconds
 sample_count >= min_samples
 ```
 
+In practice, exact window boundaries are discrete. A 30 second scheduler window may contain samples spanning 29.5 seconds because the oldest sample just inside the window is not exactly 30.000 seconds old. `coverage_tolerance_seconds` handles that boundary effect. With the default tolerance of 1.0 second, `observed_duration = 29.5` can satisfy a 30 second rule, but `observed_duration = 20` still cannot.
+
 For 5 minutes:
 
 ```yaml
@@ -79,6 +82,7 @@ config:
   threshold_c: 35.0
   required_duration_seconds: 300.0
   min_samples: 20
+  coverage_tolerance_seconds: 1.0
   aggregation: "mean"
 ```
 
