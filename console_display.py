@@ -481,6 +481,21 @@ class ConsoleDisplay:
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
+    @staticmethod
+    def _format_pulse_timing(square_cfg: Any) -> str:
+        if not isinstance(square_cfg, dict):
+            return "n/a"
+        period_ms = square_cfg.get("period_ms")
+        time_on_ms = square_cfg.get("time_on_ms")
+        if period_ms is None or time_on_ms is None:
+            return "n/a"
+        try:
+            period = float(period_ms)
+            time_on = float(time_on_ms)
+        except (TypeError, ValueError):
+            return "n/a"
+        return f"{time_on:g} ms ON / {max(0.0, period - time_on):g} ms OFF"
+
     def _render_experiment_status(self) -> Any:
         control_mode = str(self._manager._stimulus_config.get("control_mode", "closed_loop")).lower()
         stim_cfg = self._manager._stimulus_config
@@ -531,11 +546,7 @@ class ConsoleDisplay:
         table.add_row("Pulse Frequency", self._Text(f"{pulse_hz} Hz" if pulse_hz is not None else "n/a", style="bold white"))
         table.add_row(
             "Pulse Timing",
-            self._Text(
-                f"{square_cfg.get('time_on_ms')} ms ON / "
-                f"{max(0.0, float(square_cfg.get('period_ms', 0.0)) - float(square_cfg.get('time_on_ms', 0.0))):g} ms OFF",
-                style="bold white",
-            ),
+            self._Text(self._format_pulse_timing(square_cfg), style="bold white"),
         )
         train_timing_text = f"{train_on} s ON / {train_off} s OFF"
         train_timing_style = "bold white"
