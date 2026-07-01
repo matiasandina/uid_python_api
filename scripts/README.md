@@ -1,5 +1,36 @@
 # Scripts
 
+## `plot_temperature_snapshot.py`
+
+One-shot temperature visualization for active or completed session CSV files.
+It opens the CSV files read-only, drops any incomplete final row, and defaults
+to plotting from session start through `now - 10 minutes` so the newest writer
+activity is left alone.
+
+Typical active-session use:
+
+```bash
+uv run python scripts/plot_temperature_snapshot.py data/<session_dir>
+```
+
+Useful controls:
+
+```bash
+uv run python scripts/plot_temperature_snapshot.py data/<session_dir> --safe-lag-min 5
+uv run python scripts/plot_temperature_snapshot.py data/<session_dir> --config configs/open_loop/<run_config>.yaml
+uv run python scripts/plot_temperature_snapshot.py data/<session_dir> --config configs/closed_loop/<run_config>.yaml
+```
+
+The generated HTML has per-RFID line toggles, datetime range controls, quick
+1/6/12/24 h zoom buttons, and stimulation-window shading. If `session.yaml`
+already contains trigger events, the shaded windows are commanded/recorded by
+the runtime. During an active run before `session.yaml` exists, pass the run
+config. Open-loop configs produce planned windows from `stimulus.start`,
+`stimulus.run_for_minutes`, `stimulus.train`, and selected channels. Closed-loop
+configs replay the configured classifier rules over the CSV readings and show
+inferred windows. TTL decoding is still required to confirm that hardware pulses
+actually occurred.
+
 ## `setup_doric_dll.py`
 
 As of 2026-04-08, the app defaults `stimulus.dll_path` to the repo-local,
