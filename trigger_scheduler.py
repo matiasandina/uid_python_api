@@ -82,6 +82,7 @@ class TriggerScheduler:
         classifier: ClassifierFn,
         trigger_mode: str = "pulse",
         classifier_config: Optional[Dict[str, Any]] = None,
+        missing_animal_stop_clf_seconds: Optional[float] = None,
         rule_id: str = "",
         device_names: Optional[List[str]] = None,
         target_channels: Optional[List[str]] = None,
@@ -94,6 +95,11 @@ class TriggerScheduler:
         self._interval_seconds = interval_seconds
         self._window_seconds = window_seconds
         self._missing_animal_seconds = missing_animal_seconds
+        self._missing_animal_stop_clf_seconds = (
+            missing_animal_seconds
+            if missing_animal_stop_clf_seconds is None
+            else missing_animal_stop_clf_seconds
+        )
         self._classifier = classifier
         mode = str(trigger_mode).strip().lower()
         self._trigger_mode = mode if mode in ("pulse", "window") else "pulse"
@@ -162,25 +168,29 @@ class TriggerScheduler:
             seconds_since = animal.seconds_since_last_scan
             if (
                 seconds_since is not None
-                and self._missing_animal_seconds > 0
-                and seconds_since > self._missing_animal_seconds
                 and (not self._device_names or animal.last_device_name in self._device_names)
             ):
-                last_emit = self._last_missing_emitted.get(animal.animal_id)
-                if last_emit is None or (now - last_emit).total_seconds() >= self._interval_seconds:
-                    self._last_missing_emitted[animal.animal_id] = now
-                    if self._on_missing:
-                        self._on_missing(self._rule_id, animal.animal_id, seconds_since)
-                self._handle_no_evidence(
-                    animal_id=animal.animal_id,
-                    now=now,
-                    reason=f"missing data; last seen {seconds_since:.0f}s ago",
-                    meta={
-                        "seconds_since_last_scan": seconds_since,
-                        "missing_animal_seconds": self._missing_animal_seconds,
-                    },
-                )
-                continue
+                if self._missing_animal_seconds > 0 and seconds_since > self._missing_animal_seconds:
+                    last_emit = self._last_missing_emitted.get(animal.animal_id)
+                    if last_emit is None or (now - last_emit).total_seconds() >= self._interval_seconds:
+                        self._last_missing_emitted[animal.animal_id] = now
+                        if self._on_missing:
+                            self._on_missing(self._rule_id, animal.animal_id, seconds_since)
+                if (
+                    self._missing_animal_stop_clf_seconds > 0
+                    and seconds_since > self._missing_animal_stop_clf_seconds
+                ):
+                    self._handle_no_evidence(
+                        animal_id=animal.animal_id,
+                        now=now,
+                        reason=f"missing data; last seen {seconds_since:.0f}s ago",
+                        meta={
+                            "seconds_since_last_scan": seconds_since,
+                            "missing_animal_seconds": self._missing_animal_seconds,
+                            "missing_animal_stop_clf_seconds": self._missing_animal_stop_clf_seconds,
+                        },
+                    )
+                    continue
 
             readings = animal.get_readings_in_window()
             if not readings:

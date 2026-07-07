@@ -217,6 +217,7 @@ class TypedConfigTests(unittest.TestCase):
                                 "evaluate_interval_seconds": 0.5,
                                 "clf_data_input_window_seconds": 60.0,
                                 "missing_animal_seconds": 120.0,
+                                "missing_animal_stop_clf_seconds": 3600.0,
                                 "mode": "window",
                                 "config": {"threshold_c": 35.0},
                             },
@@ -240,6 +241,10 @@ class TypedConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(config["closed_loop"]["rules"][0]["id"], "box1")
+        self.assertEqual(
+            config["closed_loop"]["rules"][0]["classifier"]["missing_animal_stop_clf_seconds"],
+            3600.0,
+        )
         self.assertEqual(config["closed_loop"]["rules"][0]["outputs"]["laser_channels"], ["ch1"])
 
     def test_runtime_translates_legacy_start_delay_into_start_block(self):

@@ -196,6 +196,7 @@ class ClosedLoopClassifierConfig(BaseModel):
     evaluate_interval_seconds: float
     clf_data_input_window_seconds: float
     missing_animal_seconds: Optional[float] = None
+    missing_animal_stop_clf_seconds: Optional[float] = None
     config: Dict[str, Any] = Field(default_factory=dict)
     mode: str = "window"
 
@@ -207,7 +208,12 @@ class ClosedLoopClassifierConfig(BaseModel):
             raise ValueError("closed_loop.rules[].classifier.plugin must be non-empty.")
         return stripped
 
-    @field_validator("evaluate_interval_seconds", "clf_data_input_window_seconds", "missing_animal_seconds")
+    @field_validator(
+        "evaluate_interval_seconds",
+        "clf_data_input_window_seconds",
+        "missing_animal_seconds",
+        "missing_animal_stop_clf_seconds",
+    )
     @classmethod
     def _positive_optional(cls, value: Optional[float]) -> Optional[float]:
         if value is None:

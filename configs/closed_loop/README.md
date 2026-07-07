@@ -18,6 +18,7 @@ Profiles:
 Classifier timing:
 
 - `closed_loop.rules[].classifier.clf_data_input_window_seconds` controls which recent readings are passed to the classifier; keep it slightly longer than the evidence duration so the UI does not bounce between packets
+- `closed_loop.rules[].classifier.missing_animal_seconds` emits missing-animal warnings; `missing_animal_stop_clf_seconds` can be set higher to keep evaluating buffered classifier evidence before forcing a no-evidence stop
 - `classifiers.threshold_duration:evaluate` crops that input to the newest `required_duration_seconds` evidence window before allowing a trigger
 - `coverage_tolerance_seconds` defaults to `1.0` so normal sample timing jitter at the edge of the window does not leave a 30 second rule stuck at `observed 29.x/30s`
 - for a true all-observed-samples-below rule, set `aggregation: "all"`

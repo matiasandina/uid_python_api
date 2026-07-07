@@ -34,6 +34,7 @@ Overlay policy:
 - `closed_loop.rules[].classifier.evaluate_interval_seconds`
 - `closed_loop.rules[].classifier.clf_data_input_window_seconds`
 - `closed_loop.rules[].classifier.missing_animal_seconds`
+- `closed_loop.rules[].classifier.missing_animal_stop_clf_seconds`: optional stop threshold; defaults to `missing_animal_seconds` when omitted
 - `closed_loop.rules[].classifier.mode`: `pulse` or `window`
 - `closed_loop.rules[].classifier.config`
 - `closed_loop.rules[].outputs.laser_channels`

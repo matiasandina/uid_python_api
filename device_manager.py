@@ -539,6 +539,11 @@ class DeviceManager:
                 classifier=classifier,
                 trigger_mode=str(classifier_cfg.get("mode", "window")),
                 classifier_config=classifier_cfg.get("config", {}),
+                missing_animal_stop_clf_seconds=(
+                    float(classifier_cfg["missing_animal_stop_clf_seconds"])
+                    if classifier_cfg.get("missing_animal_stop_clf_seconds") is not None
+                    else None
+                ),
                 rule_id=str(rule.get("id", "")),
                 device_names=resolved_devices,
                 target_channels=rule.get("outputs", {}).get("laser_channels", []),

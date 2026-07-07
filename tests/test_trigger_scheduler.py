@@ -48,7 +48,13 @@ def true_classifier(animal_id, window_readings, now, config):
 
 
 class TriggerSchedulerMissingDataTests(unittest.TestCase):
-    def make_scheduler(self, animal: FakeAnimal, events: list, missing_events: list) -> TriggerScheduler:
+    def make_scheduler(
+        self,
+        animal: FakeAnimal,
+        events: list,
+        missing_events: list,
+        missing_animal_stop_clf_seconds: Optional[float] = None,
+    ) -> TriggerScheduler:
         return TriggerScheduler(
             registry=FakeRegistry(animal),
             interval_seconds=1.0,
@@ -57,6 +63,7 @@ class TriggerSchedulerMissingDataTests(unittest.TestCase):
             classifier=true_classifier,
             trigger_mode="window",
             classifier_config={"stimulus_id": "below_33_c_30s"},
+            missing_animal_stop_clf_seconds=missing_animal_stop_clf_seconds,
             rule_id="box1",
             device_names=["Reader-1"],
             target_channels=["ch1"],
@@ -94,6 +101,43 @@ class TriggerSchedulerMissingDataTests(unittest.TestCase):
         self.assertEqual([event.action for event in events], ["start", "stop"])
         self.assertEqual(events[-1].reason, "missing data; last seen 121s ago")
         self.assertEqual(missing_events, [("box1", "ABC123", 121.0)])
+
+    def test_missing_animal_warning_can_continue_classifier_until_stop_threshold(self):
+        animal = FakeAnimal("ABC123")
+        events = []
+        missing_events = []
+        scheduler = self.make_scheduler(
+            animal,
+            events,
+            missing_events,
+            missing_animal_stop_clf_seconds=3600.0,
+        )
+
+        scheduler._evaluate_once()
+        animal.seconds_since_last_scan = 121.0
+        scheduler._evaluate_once()
+
+        self.assertEqual([event.action for event in events], ["start"])
+        self.assertEqual(missing_events, [("box1", "ABC123", 121.0)])
+
+    def test_missing_animal_stop_threshold_forces_stop(self):
+        animal = FakeAnimal("ABC123")
+        events = []
+        missing_events = []
+        scheduler = self.make_scheduler(
+            animal,
+            events,
+            missing_events,
+            missing_animal_stop_clf_seconds=3600.0,
+        )
+
+        scheduler._evaluate_once()
+        animal.seconds_since_last_scan = 3601.0
+        scheduler._evaluate_once()
+
+        self.assertEqual([event.action for event in events], ["start", "stop"])
+        self.assertEqual(events[-1].reason, "missing data; last seen 3601s ago")
+        self.assertEqual(missing_events, [("box1", "ABC123", 3601.0)])
 
 
 if __name__ == "__main__":
