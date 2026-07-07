@@ -177,21 +177,35 @@ def _assignment_for_channel(row: dict[str, Any], channel_name: str) -> dict[str,
     try:
         meta = json.loads(str(row.get("meta_json") or "{}"))
     except Exception:
-        return None
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+
     assignments = meta.get("assignments", [])
-    if not isinstance(assignments, list):
+    if isinstance(assignments, list) and assignments:
+        for assignment in assignments:
+            if not isinstance(assignment, dict):
+                continue
+            if str(assignment.get("channel") or "").strip() != channel_name:
+                continue
+            return {
+                "id": str(assignment.get("id") or "").strip() or None,
+                "assigned_animal_ids": [
+                    str(item).strip().upper()
+                    for item in assignment.get("assigned_animal_ids", [])
+                    if str(item).strip()
+                ],
+            }
         return None
-    for assignment in assignments:
-        if not isinstance(assignment, dict):
-            continue
-        if str(assignment.get("channel") or "").strip() != channel_name:
-            continue
-        return {
-            "id": str(assignment.get("id") or "").strip() or None,
-            "assigned_animal_ids": [
-                str(item).strip().upper()
-                for item in assignment.get("assigned_animal_ids", [])
-                if str(item).strip()
-            ],
-        }
-    return None
+
+    animal_id = str(row.get("animal_id") or "").strip()
+    if not animal_id or animal_id == "__open_loop__":
+        return None
+    devices = meta.get("devices") if isinstance(meta.get("devices"), list) else []
+    device_id = next((str(device).strip() for device in devices if str(device).strip()), None)
+    if device_id is None:
+        device_id = str(row.get("rule_id") or "").strip() or None
+    return {
+        "id": device_id,
+        "assigned_animal_ids": [animal_id.upper()],
+    }

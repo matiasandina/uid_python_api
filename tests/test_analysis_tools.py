@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -12,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from analysis_tools import load_analysis_session
+from analysis_tools.triggers import build_stimulation_windows
 from analysis_tools.ttl import (
     TTL_PULSE_SCHEMA,
     build_ttl_qc_table,
@@ -21,6 +23,84 @@ from ttl_capture.frame_index import TTLFrameIndexWriter
 
 
 class AnalysisToolsTests(unittest.TestCase):
+    def test_closed_loop_stimulation_windows_derive_assignment_from_animal_event(self):
+        trigger_events = pl.from_dicts(
+            [
+                {
+                    "session_name": "session",
+                    "animal_id": "6e69f157",
+                    "animal_event_id": 1,
+                    "rule_id": "below35",
+                    "action": "start",
+                    "stimulus_id": "laser",
+                    "reason": "triggered",
+                    "channels": ["ch4"],
+                    "meta_json": json.dumps({"devices": ["MM24"], "channels": ["ch4"]}),
+                    "timestamp_local": datetime(2026, 4, 15, 12, 0, 0),
+                    "timestamp_utc": datetime(2026, 4, 15, 16, 0, 0, tzinfo=timezone.utc),
+                },
+                {
+                    "session_name": "session",
+                    "animal_id": "6e69f157",
+                    "animal_event_id": 2,
+                    "rule_id": "below35",
+                    "action": "stop",
+                    "stimulus_id": "laser",
+                    "reason": "recovered",
+                    "channels": ["ch4"],
+                    "meta_json": json.dumps({"devices": ["MM24"], "channels": ["ch4"]}),
+                    "timestamp_local": datetime(2026, 4, 15, 12, 1, 0),
+                    "timestamp_utc": datetime(2026, 4, 15, 16, 1, 0, tzinfo=timezone.utc),
+                },
+            ]
+        )
+
+        windows = build_stimulation_windows(trigger_events)
+
+        self.assertEqual(windows.height, 1)
+        row = windows.row(0, named=True)
+        self.assertEqual(row["assignment_id"], "MM24")
+        self.assertEqual(row["assigned_animal_ids"], ["6E69F157"])
+
+    def test_open_loop_stimulation_windows_without_assignments_keep_no_assignment(self):
+        trigger_events = pl.from_dicts(
+            [
+                {
+                    "session_name": "session",
+                    "animal_id": "__open_loop__",
+                    "animal_event_id": 1,
+                    "rule_id": "__open_loop__",
+                    "action": "start",
+                    "stimulus_id": "__open_loop__",
+                    "reason": "start",
+                    "channels": ["ch1"],
+                    "meta_json": json.dumps({"channels": ["ch1"]}),
+                    "timestamp_local": datetime(2026, 4, 15, 12, 0, 0),
+                    "timestamp_utc": datetime(2026, 4, 15, 16, 0, 0, tzinfo=timezone.utc),
+                },
+                {
+                    "session_name": "session",
+                    "animal_id": "__open_loop__",
+                    "animal_event_id": 2,
+                    "rule_id": "__open_loop__",
+                    "action": "stop",
+                    "stimulus_id": "__open_loop__",
+                    "reason": "stop",
+                    "channels": ["ch1"],
+                    "meta_json": json.dumps({"channels": ["ch1"]}),
+                    "timestamp_local": datetime(2026, 4, 15, 12, 1, 0),
+                    "timestamp_utc": datetime(2026, 4, 15, 16, 1, 0, tzinfo=timezone.utc),
+                },
+            ]
+        )
+
+        windows = build_stimulation_windows(trigger_events)
+
+        self.assertEqual(windows.height, 1)
+        row = windows.row(0, named=True)
+        self.assertIsNone(row["assignment_id"])
+        self.assertEqual(row["assigned_animal_ids"], [])
+
     def test_ttl_qc_uses_within_bout_pulse_frequency_for_train_stimulation(self):
         pulse_rows = []
         pulse_width_ms = 10.0
