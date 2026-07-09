@@ -466,6 +466,10 @@ def _rule_applies_to_reading(rule: dict[str, Any], reading: Reading) -> bool:
     return True
 
 
+def _progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def _load_inferred_closed_loop_windows(
     config: dict[str, Any],
     metadata: dict[str, Any],
@@ -496,6 +500,7 @@ def _load_inferred_closed_loop_windows(
         try:
             classifier = load_classifier(str(classifier_cfg["plugin"]))
             window_seconds = float(classifier_cfg["clf_data_input_window_seconds"])
+            evaluate_interval_seconds = max(0.0, float(classifier_cfg.get("evaluate_interval_seconds", 0.0) or 0.0))
         except Exception:
             continue
 
@@ -521,7 +526,12 @@ def _load_inferred_closed_loop_windows(
         for animal_id, animal_readings in candidates_by_animal.items():
             start_index = 0
             active_window: tuple[datetime, str, str] | None = None
+            next_eval_at: datetime | None = None
             for index, reading in enumerate(animal_readings):
+                if next_eval_at is not None and reading.timestamp < next_eval_at:
+                    continue
+                if evaluate_interval_seconds > 0:
+                    next_eval_at = reading.timestamp + timedelta(seconds=evaluate_interval_seconds)
                 start_cutoff = reading.timestamp - timedelta(seconds=window_seconds)
                 while start_index < index and animal_readings[start_index].timestamp < start_cutoff:
                     start_index += 1
@@ -1199,12 +1209,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No CSV files found under {input_path}", file=sys.stderr)
         return 2
 
+    _progress(f"Reading {len(csv_paths)} CSV file(s) through cutoff {cutoff.strftime('%Y-%m-%d %H:%M:%S %Z')}...")
     readings = _load_readings(csv_paths, local_tz, cutoff)
     if since is not None:
         readings = [reading for reading in readings if reading.timestamp >= since]
     if not readings:
         print("No temperature readings matched the requested filters.", file=sys.stderr)
         return 1
+    _progress(f"Loaded {len(readings):,} temperature reading(s) from {len({reading.animal_id for reading in readings})} RFID(s).")
+
+    if config:
+        rules = _closed_loop_rules(config, metadata)
+        if rules:
+            _progress(
+                "Inferring closed-loop shading from config "
+                f"({len(rules)} rule(s), runtime evaluation cadence respected)..."
+            )
 
     windows = _load_snapshot_windows(
         config=config,
