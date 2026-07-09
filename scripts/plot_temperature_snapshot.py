@@ -229,6 +229,37 @@ def _load_stim_windows(metadata: dict[str, Any], local_tz: ZoneInfo, cutoff: dat
 
     active: dict[tuple[str, str, str], tuple[str, dict[str, Any], datetime]] = {}
     windows: list[StimWindow] = []
+
+    def append_window(
+        start_animal_id: str,
+        start_event: dict[str, Any],
+        start_timestamp: datetime,
+        stop_timestamp: datetime,
+        channel_name: str,
+        stop_reason: str,
+    ) -> None:
+        if stop_timestamp <= start_timestamp:
+            return
+        assignment_id, assigned_animals = _event_assignments(start_event, channel_name)
+        shade_animal = "__open_loop__" if start_animal_id == "__OPEN_LOOP__" else start_animal_id
+        if assigned_animals:
+            shade_animal = ",".join(assigned_animals)
+        stimulus_id = str(start_event.get("stimulus_id") or "").strip()
+        reason = f"{start_event.get('reason', '')} -> {stop_reason}".strip()
+        if assignment_id:
+            reason = f"{assignment_id}: {reason}"
+        windows.append(
+            StimWindow(
+                start=start_timestamp,
+                stop=stop_timestamp,
+                animal_id=shade_animal,
+                stimulus_id=stimulus_id,
+                channel_name=channel_name,
+                reason=reason,
+                source="recorded",
+            )
+        )
+
     for animal_id, event, timestamp in sorted(events, key=lambda item: item[2]):
         action = str(event.get("action") or "").strip().lower()
         stimulus_id = str(event.get("stimulus_id") or "").strip()
@@ -238,24 +269,24 @@ def _load_stim_windows(metadata: dict[str, Any], local_tz: ZoneInfo, cutoff: dat
                 active[key] = (animal_id, event, timestamp)
             elif action == "stop" and key in active:
                 start_animal_id, start_event, start_timestamp = active.pop(key)
-                assignment_id, assigned_animals = _event_assignments(start_event, channel_name)
-                shade_animal = "__open_loop__" if start_animal_id == "__OPEN_LOOP__" else start_animal_id
-                if assigned_animals:
-                    shade_animal = ",".join(assigned_animals)
-                reason = f"{start_event.get('reason', '')} -> {event.get('reason', '')}".strip()
-                if assignment_id:
-                    reason = f"{assignment_id}: {reason}"
-                windows.append(
-                    StimWindow(
-                        start=start_timestamp,
-                        stop=timestamp,
-                        animal_id=shade_animal,
-                        stimulus_id=stimulus_id,
-                        channel_name=channel_name,
-                        reason=reason,
-                        source="recorded",
-                    )
+                append_window(
+                    start_animal_id=start_animal_id,
+                    start_event=start_event,
+                    start_timestamp=start_timestamp,
+                    stop_timestamp=timestamp,
+                    channel_name=channel_name,
+                    stop_reason=str(event.get("reason", "")),
                 )
+    for _, (start_animal_id, start_event, start_timestamp) in active.items():
+        for channel_name in _event_channels(start_event):
+            append_window(
+                start_animal_id=start_animal_id,
+                start_event=start_event,
+                start_timestamp=start_timestamp,
+                stop_timestamp=cutoff,
+                channel_name=channel_name,
+                stop_reason="active at cutoff",
+            )
     return windows
 
 
@@ -553,6 +584,58 @@ def _load_inferred_closed_loop_windows(
                                 source="inferred",
                             )
                         )
+    return windows
+
+
+def _windows_overlap(left: StimWindow, right: StimWindow) -> bool:
+    return left.start < right.stop and right.start < left.stop
+
+
+def _append_non_overlapping_windows(windows: list[StimWindow], candidates: list[StimWindow]) -> None:
+    """Add diagnostic windows unless a recorded window already covers the same animal/channel span."""
+    for candidate in candidates:
+        if candidate.source not in {"planned", "inferred"}:
+            windows.append(candidate)
+            continue
+        duplicate = any(
+            existing.source == "recorded"
+            and existing.animal_id == candidate.animal_id
+            and existing.channel_name == candidate.channel_name
+            and _windows_overlap(existing, candidate)
+            for existing in windows
+        )
+        if not duplicate:
+            windows.append(candidate)
+
+
+def _load_snapshot_windows(
+    config: dict[str, Any],
+    metadata: dict[str, Any],
+    local_tz: ZoneInfo,
+    readings: list[Reading],
+    cutoff: datetime,
+) -> list[StimWindow]:
+    windows = _load_stim_windows(metadata, local_tz, cutoff)
+    if not readings:
+        return windows
+
+    session_start = min(reading.timestamp for reading in readings)
+    planned = _load_planned_open_loop_windows(
+        config=config,
+        metadata=metadata,
+        local_tz=local_tz,
+        session_start=session_start,
+        cutoff=cutoff,
+    )
+    _append_non_overlapping_windows(windows, planned)
+
+    inferred = _load_inferred_closed_loop_windows(
+        config=config,
+        metadata=metadata,
+        readings=readings,
+        cutoff=cutoff,
+    )
+    _append_non_overlapping_windows(windows, inferred)
     return windows
 
 
@@ -1045,22 +1128,13 @@ def main(argv: list[str] | None = None) -> int:
         print("No temperature readings matched the requested filters.", file=sys.stderr)
         return 1
 
-    windows = _load_stim_windows(metadata, local_tz, cutoff)
-    if not windows:
-        windows = _load_planned_open_loop_windows(
-            config=config,
-            metadata=metadata,
-            local_tz=local_tz,
-            session_start=min(reading.timestamp for reading in readings),
-            cutoff=cutoff,
-        )
-    if not windows:
-        windows = _load_inferred_closed_loop_windows(
-            config=config,
-            metadata=metadata,
-            readings=readings,
-            cutoff=cutoff,
-        )
+    windows = _load_snapshot_windows(
+        config=config,
+        metadata=metadata,
+        local_tz=local_tz,
+        readings=readings,
+        cutoff=cutoff,
+    )
     if since is not None:
         windows = [window for window in windows if window.stop >= since]
 
