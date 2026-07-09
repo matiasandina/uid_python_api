@@ -475,6 +475,7 @@ def _load_inferred_closed_loop_windows(
     metadata: dict[str, Any],
     readings: list[Reading],
     cutoff: datetime,
+    infer_interval_seconds: float = 30.0,
 ) -> list[StimWindow]:
     stimulus = _stimulus_config(metadata, config)
     if str(stimulus.get("control_mode") or "").strip().lower() != "closed_loop":
@@ -503,6 +504,9 @@ def _load_inferred_closed_loop_windows(
             evaluate_interval_seconds = max(0.0, float(classifier_cfg.get("evaluate_interval_seconds", 0.0) or 0.0))
         except Exception:
             continue
+        effective_interval_seconds = evaluate_interval_seconds
+        if infer_interval_seconds > 0:
+            effective_interval_seconds = max(evaluate_interval_seconds, infer_interval_seconds)
 
         mode = str(classifier_cfg.get("mode", "window")).strip().lower()
         classifier_config = classifier_cfg.get("config", {})
@@ -530,8 +534,8 @@ def _load_inferred_closed_loop_windows(
             for index, reading in enumerate(animal_readings):
                 if next_eval_at is not None and reading.timestamp < next_eval_at:
                     continue
-                if evaluate_interval_seconds > 0:
-                    next_eval_at = reading.timestamp + timedelta(seconds=evaluate_interval_seconds)
+                if effective_interval_seconds > 0:
+                    next_eval_at = reading.timestamp + timedelta(seconds=effective_interval_seconds)
                 start_cutoff = reading.timestamp - timedelta(seconds=window_seconds)
                 while start_index < index and animal_readings[start_index].timestamp < start_cutoff:
                     start_index += 1
@@ -624,6 +628,7 @@ def _load_snapshot_windows(
     local_tz: ZoneInfo,
     readings: list[Reading],
     cutoff: datetime,
+    infer_interval_seconds: float = 30.0,
 ) -> list[StimWindow]:
     windows = _load_stim_windows(metadata, local_tz, cutoff)
     if not readings:
@@ -644,6 +649,7 @@ def _load_snapshot_windows(
         metadata=metadata,
         readings=readings,
         cutoff=cutoff,
+        infer_interval_seconds=infer_interval_seconds,
     )
     _append_non_overlapping_windows(windows, inferred)
     return windows
@@ -1187,6 +1193,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--safe-lag-min", type=float, default=10.0, help="Exclude newest N minutes. Default: 10.")
     parser.add_argument("--since", help="Optional local start datetime, e.g. 2026-07-01T08:00:00.")
     parser.add_argument("--until", help="Optional local end datetime. Overrides now minus safety lag.")
+    parser.add_argument(
+        "--infer-interval-seconds",
+        type=float,
+        default=30.0,
+        help="Minimum cadence for inferred closed-loop replay. Default: 30. Use 0 for exact config cadence.",
+    )
     parser.add_argument("--max-points-per-animal", type=int, default=8000, help="Visual downsample cap per RFID. Default: 8000.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the generated HTML in the default browser.")
     return parser
@@ -1221,9 +1233,14 @@ def main(argv: list[str] | None = None) -> int:
     if config:
         rules = _closed_loop_rules(config, metadata)
         if rules:
+            interval_note = (
+                "exact config cadence"
+                if args.infer_interval_seconds <= 0
+                else f"at least {args.infer_interval_seconds:g}s between inferred evaluations"
+            )
             _progress(
                 "Inferring closed-loop shading from config "
-                f"({len(rules)} rule(s), runtime evaluation cadence respected)..."
+                f"({len(rules)} rule(s), {interval_note})..."
             )
 
     windows = _load_snapshot_windows(
@@ -1232,6 +1249,7 @@ def main(argv: list[str] | None = None) -> int:
         local_tz=local_tz,
         readings=readings,
         cutoff=cutoff,
+        infer_interval_seconds=max(0.0, float(args.infer_interval_seconds)),
     )
     if since is not None:
         windows = [window for window in windows if window.stop >= since]

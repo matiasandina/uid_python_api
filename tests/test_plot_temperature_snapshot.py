@@ -165,6 +165,62 @@ class PlotTemperatureSnapshotTests(unittest.TestCase):
 
         self.assertEqual(payload["warnings"], ["Use --config for active sessions."])
 
+    def test_inferred_closed_loop_respects_minimum_inference_interval(self):
+        readings = [
+            Reading(
+                timestamp=datetime(2026, 7, 9, 12, minute, tzinfo=timezone.utc),
+                animal_id="A1",
+                temperature_c=34.0,
+                source_file="Reader-1.csv",
+                zone="1",
+            )
+            for minute in range(3)
+        ]
+        metadata = {
+            "config": {
+                "stimulus": {
+                    "enabled": True,
+                    "mode": "monitor",
+                    "control_mode": "closed_loop",
+                    "window_on_seconds": 1.0,
+                },
+                "closed_loop": {
+                    "rules": [
+                        {
+                            "id": "box1",
+                            "devices": ["Reader-1"],
+                            "classifier": {
+                                "plugin": "classifiers.threshold_duration:evaluate",
+                                "clf_data_input_window_seconds": 300,
+                                "evaluate_interval_seconds": 1,
+                                "mode": "window",
+                                "config": {
+                                    "direction": "below",
+                                    "threshold_c": 35.0,
+                                    "required_duration_seconds": 0.0,
+                                    "min_samples": 1,
+                                    "stimulus_id": "below_35",
+                                },
+                            },
+                            "outputs": {"laser_channels": ["ch1"]},
+                        }
+                    ]
+                },
+            }
+        }
+
+        windows = _load_snapshot_windows(
+            {},
+            metadata,
+            ZoneInfo("UTC"),
+            readings,
+            datetime(2026, 7, 9, 12, 3, tzinfo=timezone.utc),
+            infer_interval_seconds=90,
+        )
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].start, datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc))
+
 
 if __name__ == "__main__":
     unittest.main()
