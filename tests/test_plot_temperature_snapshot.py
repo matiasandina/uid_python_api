@@ -8,7 +8,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.plot_temperature_snapshot import Reading, _load_snapshot_windows, _load_stim_windows
+from scripts.plot_temperature_snapshot import (
+    Reading,
+    _build_payload,
+    _build_snapshot_warnings,
+    _load_snapshot_windows,
+    _load_stim_windows,
+)
 
 
 class PlotTemperatureSnapshotTests(unittest.TestCase):
@@ -132,6 +138,32 @@ class PlotTemperatureSnapshotTests(unittest.TestCase):
 
         self.assertIn(("B2", "recorded"), sources_by_animal)
         self.assertIn(("A1", "inferred"), sources_by_animal)
+
+    def test_missing_metadata_and_config_warns_about_active_session_inference(self):
+        warnings = _build_snapshot_warnings(
+            metadata_path=None,
+            metadata={},
+            config_path=None,
+            config={},
+            windows=[],
+        )
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("active session", warnings[0])
+        self.assertIn("--config", warnings[0])
+
+    def test_payload_includes_warning_messages(self):
+        reading = Reading(
+            timestamp=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc),
+            animal_id="A1",
+            temperature_c=36.5,
+            source_file="Reader-1.csv",
+            zone="1",
+        )
+
+        payload = _build_payload([reading], [], 8000, warnings=["Use --config for active sessions."])
+
+        self.assertEqual(payload["warnings"], ["Use --config for active sessions."])
 
 
 if __name__ == "__main__":

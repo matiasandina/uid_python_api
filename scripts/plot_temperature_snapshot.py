@@ -488,9 +488,6 @@ def _load_inferred_closed_loop_windows(
         return []
 
     windows: list[StimWindow] = []
-    by_animal: dict[str, list[Reading]] = defaultdict(list)
-    for reading in readings:
-        by_animal[reading.animal_id].append(reading)
 
     for rule in rules:
         classifier_cfg = rule.get("classifier", {})
@@ -516,61 +513,64 @@ def _load_inferred_closed_loop_windows(
             channels = [""]
         pulse_seconds = max(0.1, float(stimulus.get("window_on_seconds", 1.0) or 1.0))
 
-        active_by_animal: dict[str, tuple[datetime, str, str]] = {}
         candidate_readings = [reading for reading in readings if _rule_applies_to_reading(rule, reading)]
+        candidates_by_animal: dict[str, list[Reading]] = defaultdict(list)
         for reading in candidate_readings:
-            animal_readings = by_animal[reading.animal_id]
-            start_cutoff = reading.timestamp - timedelta(seconds=window_seconds)
-            window_payload = [
-                _reading_payload(item)
-                for item in animal_readings
-                if start_cutoff <= item.timestamp <= reading.timestamp and _rule_applies_to_reading(rule, item)
-            ]
-            if not window_payload:
-                continue
-            try:
-                result = classifier(reading.animal_id, window_payload, reading.timestamp, classifier_config)
-            except Exception:
-                continue
-            result_dict = result if isinstance(result, dict) else {}
-            condition_true = bool(result_dict.get("condition_true", result_dict.get("trigger", False)))
-            stimulus_id = str(result_dict.get("stimulus_id", classifier_config.get("stimulus_id", "")))
-            reason = str(result_dict.get("reason", "closed_loop replay"))
+            candidates_by_animal[reading.animal_id].append(reading)
 
-            if mode == "window":
-                previous = active_by_animal.get(reading.animal_id)
-                if condition_true and previous is None:
-                    active_by_animal[reading.animal_id] = (reading.timestamp, stimulus_id, reason)
-                elif not condition_true and previous is not None:
-                    start, start_stimulus_id, start_reason = active_by_animal.pop(reading.animal_id)
+        for animal_id, animal_readings in candidates_by_animal.items():
+            start_index = 0
+            active_window: tuple[datetime, str, str] | None = None
+            for index, reading in enumerate(animal_readings):
+                start_cutoff = reading.timestamp - timedelta(seconds=window_seconds)
+                while start_index < index and animal_readings[start_index].timestamp < start_cutoff:
+                    start_index += 1
+                window_payload = [_reading_payload(item) for item in animal_readings[start_index : index + 1]]
+                if not window_payload:
+                    continue
+                try:
+                    result = classifier(reading.animal_id, window_payload, reading.timestamp, classifier_config)
+                except Exception:
+                    continue
+                result_dict = result if isinstance(result, dict) else {}
+                condition_true = bool(result_dict.get("condition_true", result_dict.get("trigger", False)))
+                stimulus_id = str(result_dict.get("stimulus_id", classifier_config.get("stimulus_id", "")))
+                reason = str(result_dict.get("reason", "closed_loop replay"))
+
+                if mode == "window":
+                    if condition_true and active_window is None:
+                        active_window = (reading.timestamp, stimulus_id, reason)
+                    elif not condition_true and active_window is not None:
+                        start, start_stimulus_id, start_reason = active_window
+                        active_window = None
+                        for channel_name in channels:
+                            windows.append(
+                                StimWindow(
+                                    start=start,
+                                    stop=reading.timestamp,
+                                    animal_id=animal_id,
+                                    stimulus_id=start_stimulus_id,
+                                    channel_name=channel_name,
+                                    reason=f"inferred closed_loop: {start_reason} -> {reason}",
+                                    source="inferred",
+                                )
+                            )
+                elif result_dict.get("trigger"):
                     for channel_name in channels:
                         windows.append(
                             StimWindow(
-                                start=start,
-                                stop=reading.timestamp,
-                                animal_id=reading.animal_id,
-                                stimulus_id=start_stimulus_id,
+                                start=reading.timestamp,
+                                stop=min(reading.timestamp + timedelta(seconds=pulse_seconds), cutoff),
+                                animal_id=animal_id,
+                                stimulus_id=stimulus_id,
                                 channel_name=channel_name,
-                                reason=f"inferred closed_loop: {start_reason} -> {reason}",
+                                reason=f"inferred closed_loop pulse: {reason}",
                                 source="inferred",
                             )
                         )
-            elif result_dict.get("trigger"):
-                for channel_name in channels:
-                    windows.append(
-                        StimWindow(
-                            start=reading.timestamp,
-                            stop=min(reading.timestamp + timedelta(seconds=pulse_seconds), cutoff),
-                            animal_id=reading.animal_id,
-                            stimulus_id=stimulus_id,
-                            channel_name=channel_name,
-                            reason=f"inferred closed_loop pulse: {reason}",
-                            source="inferred",
-                        )
-                    )
 
-        if mode == "window":
-            for animal_id, (start, stimulus_id, reason) in active_by_animal.items():
+            if mode == "window" and active_window is not None:
+                start, stimulus_id, reason = active_window
                 if cutoff > start:
                     for channel_name in channels:
                         windows.append(
@@ -658,7 +658,54 @@ def _downsample_points(points: list[Reading], max_points: int) -> list[Reading]:
     return sorted(sampled[:max_points], key=lambda item: item.timestamp)
 
 
-def _build_payload(readings: list[Reading], windows: list[StimWindow], max_points_per_animal: int) -> dict[str, Any]:
+def _metadata_has_trigger_events(metadata: dict[str, Any]) -> bool:
+    grouped = metadata.get("triggers_by_animal", {})
+    if not isinstance(grouped, dict):
+        return False
+    return any(isinstance(events, list) and bool(events) for events in grouped.values())
+
+
+def _build_snapshot_warnings(
+    *,
+    metadata_path: Path | None,
+    metadata: dict[str, Any],
+    config_path: Path | None,
+    config: dict[str, Any],
+    windows: list[StimWindow],
+) -> list[str]:
+    if windows:
+        return []
+    warnings: list[str] = []
+    has_metadata_triggers = _metadata_has_trigger_events(metadata)
+    has_config = bool(config)
+    if metadata_path is None and not has_config:
+        warnings.append(
+            "No stimulation shading was drawn. For an active session, session.yaml is usually written only after shutdown; "
+            "rerun this snapshot with --config pointing to the run config to infer closed-loop windows from the CSV data."
+        )
+    elif not has_metadata_triggers and not has_config:
+        warnings.append(
+            "No trigger metadata or run config was available. Active-session trigger counts shown in the live UI are not visible "
+            "to this snapshot until session.yaml is written, so use --config to infer closed-loop windows."
+        )
+    elif has_config:
+        warnings.append(
+            "No stimulation windows were inferred from the provided config. Check that the config matches the running protocol, "
+            "rule device names match the CSV filenames, and --safe-lag-min is not hiding the relevant interval."
+        )
+    elif has_metadata_triggers:
+        warnings.append(
+            "Trigger metadata was found, but no start/stop windows could be built. Check for matching channels and start/stop events."
+        )
+    return warnings
+
+
+def _build_payload(
+    readings: list[Reading],
+    windows: list[StimWindow],
+    max_points_per_animal: int,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     grouped: dict[str, list[Reading]] = defaultdict(list)
     for reading in readings:
         grouped[reading.animal_id].append(reading)
@@ -683,6 +730,7 @@ def _build_payload(readings: list[Reading], windows: list[StimWindow], max_point
 
     return {
         "animals": animals,
+        "warnings": list(warnings or []),
         "windows": [
             {
                 "start_ms": int(window.start.timestamp() * 1000),
@@ -820,6 +868,16 @@ main {{
   color: var(--muted);
   font-size: 12px;
 }}
+#warnings {{
+  display: none;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid #f0b429;
+  background: #fff8e6;
+  color: #5f4300;
+  font-size: 13px;
+  line-height: 1.35;
+}}
 @media (max-width: 780px) {{
   .layout {{
     grid-template-columns: 1fr;
@@ -874,6 +932,7 @@ main {{
     <div id="animals"></div>
   </aside>
   <main>
+    <div id="warnings"></div>
     <canvas id="plot"></canvas>
     <div id="status"></div>
   </main>
@@ -930,6 +989,18 @@ function renderAnimalList() {{
     row.appendChild(text);
     container.appendChild(row);
   }});
+}}
+
+function renderWarnings() {{
+  const container = document.getElementById("warnings");
+  const warnings = payload.warnings || [];
+  if (!warnings.length) {{
+    container.style.display = "none";
+    container.textContent = "";
+    return;
+  }}
+  container.style.display = "block";
+  container.textContent = warnings.join(" ");
 }}
 
 function niceTime(ms, spanMs) {{
@@ -1068,6 +1139,7 @@ document.querySelectorAll("[data-range-hours]").forEach(button => {{
 }});
 window.addEventListener("resize", draw);
 renderAnimalList();
+renderWarnings();
 draw();
 </script>
 </body>
@@ -1095,7 +1167,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input", type=Path, help="Session folder or one active temperature CSV.")
     parser.add_argument("--output", type=Path, help="HTML output path. Defaults inside the session folder.")
-    parser.add_argument("--config", type=Path, help="Optional run config for planned open-loop shading before session.yaml exists.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Run config for planned open-loop or inferred closed-loop shading before session.yaml exists.",
+    )
     parser.add_argument("--local-timezone", help="Override local timezone. Defaults to session metadata or this computer's timezone.")
     parser.add_argument("--metadata", type=Path, help="Optional session.yaml path for trigger/stimulation windows.")
     parser.add_argument("--safe-lag-min", type=float, default=10.0, help="Exclude newest N minutes. Default: 10.")
@@ -1109,8 +1185,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     input_path = args.input.resolve()
-    metadata = _load_metadata(_metadata_path(input_path, args.metadata))
-    config = _load_yaml_file(args.config.resolve() if args.config else None)
+    metadata_path = _metadata_path(input_path, args.metadata)
+    config_path = args.config.resolve() if args.config else None
+    metadata = _load_metadata(metadata_path)
+    config = _load_yaml_file(config_path)
     local_tz = _resolve_local_timezone(args.local_timezone, metadata)
     now_local = datetime.now(timezone.utc).astimezone(local_tz)
     cutoff = _parse_local_datetime(args.until, local_tz) or (now_local - timedelta(minutes=args.safe_lag_min))
@@ -1138,7 +1216,14 @@ def main(argv: list[str] | None = None) -> int:
     if since is not None:
         windows = [window for window in windows if window.stop >= since]
 
-    payload = _build_payload(readings, windows, args.max_points_per_animal)
+    warnings = _build_snapshot_warnings(
+        metadata_path=metadata_path,
+        metadata=metadata,
+        config_path=config_path,
+        config=config,
+        windows=windows,
+    )
+    payload = _build_payload(readings, windows, args.max_points_per_animal, warnings=warnings)
     start = min(reading.timestamp for reading in readings)
     end = max(reading.timestamp for reading in readings)
     title = f"Temperature snapshot: {input_path.name}"
@@ -1162,6 +1247,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print("No stimulation windows loaded or inferred.")
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
     if not args.no_open:
         webbrowser.open(output_path.as_uri())
     return 0
