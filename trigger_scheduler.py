@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+from classifier_temperature_filter import clean_classifier_temperatures
+
 
 ClassifierFn = Callable[[str, List[Dict[str, Any]], datetime, Dict[str, Any]], Optional[Dict[str, Any]]]
 
@@ -223,6 +225,15 @@ class TriggerScheduler:
                 }
                 for r in window_readings
             ]
+            readings_payload, filter_summary = clean_classifier_temperatures(readings_payload)
+            if not readings_payload:
+                self._handle_no_evidence(
+                    animal_id=animal.animal_id,
+                    now=now,
+                    reason="no readings after temperature filter",
+                    meta={"temperature_filter": filter_summary.as_dict()},
+                )
+                continue
 
             result = self._classifier(
                 animal.animal_id,
@@ -230,6 +241,10 @@ class TriggerScheduler:
                 now,
                 self._classifier_config,
             )
+            if isinstance(result, dict):
+                meta = dict(result.get("meta", {}))
+                meta["temperature_filter"] = filter_summary.as_dict()
+                result = {**result, "meta": meta}
             event = self._build_event_for_mode(
                 animal_id=animal.animal_id,
                 result=result,

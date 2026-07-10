@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 PROJECT_TITLE = "Real-Time UID Mouse Matrix Temperature Monitoring System"
-APP_VERSION = "0.0.1"
+APP_VERSION = "0.0.2"
 
 PROJECT_SUMMARY = (
     "IP-connected temperature monitoring from UID Mouse Matrices, temperature logging, "

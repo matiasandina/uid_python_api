@@ -1,6 +1,6 @@
 [project]
 name = "uid-python-api-teensy"
-version = "0.0.1"
+version = "0.0.2"
 description = "Real-time UID Mouse Matrix monitoring, live UI, and Doric stimulation control"
 readme = "README.md"
 requires-python = ">=3.10"

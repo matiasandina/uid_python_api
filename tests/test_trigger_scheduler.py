@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from trigger_scheduler import TriggerScheduler
@@ -138,6 +138,51 @@ class TriggerSchedulerMissingDataTests(unittest.TestCase):
         self.assertEqual([event.action for event in events], ["start", "stop"])
         self.assertEqual(events[-1].reason, "missing data; last seen 3601s ago")
         self.assertEqual(missing_events, [("box1", "ABC123", 3601.0)])
+
+
+class TriggerSchedulerTemperatureFilterTests(unittest.TestCase):
+    def test_scheduler_cleans_temperature_payload_before_classifier(self):
+        animal = FakeAnimal("ABC123")
+        base = datetime.now() - timedelta(seconds=10)
+        animal.readings = [
+            FakeReading(base, temperature=36.0, packet_number=1),
+            FakeReading(base + timedelta(seconds=1), temperature=40.0, packet_number=2),
+            FakeReading(base + timedelta(seconds=2), temperature=36.0, packet_number=3),
+        ]
+        received_temperatures = []
+        statuses = []
+
+        def classifier(animal_id, window_readings, now, config):
+            received_temperatures.extend(item["temperature"] for item in window_readings)
+            return {
+                "trigger": False,
+                "condition_true": False,
+                "action": "pulse",
+                "stimulus_id": "below_33_c_30s",
+                "reason": "window ready; mean not below threshold",
+                "meta": {"count": len(window_readings), "animal_id": animal_id},
+            }
+
+        scheduler = TriggerScheduler(
+            registry=FakeRegistry(animal),
+            interval_seconds=1.0,
+            window_seconds=30.0,
+            missing_animal_seconds=120.0,
+            classifier=classifier,
+            trigger_mode="window",
+            classifier_config={"stimulus_id": "below_33_c_30s"},
+            rule_id="box1",
+            device_names=["Reader-1"],
+            target_channels=["ch1"],
+            assigned_animal_ids=[animal.animal_id],
+            quiet_mode=True,
+        )
+
+        scheduler._evaluate_once()
+        statuses.append(scheduler.get_status_snapshot()["box1:ABC123"])
+
+        self.assertEqual(received_temperatures, [36.0, 36.0, 36.0])
+        self.assertEqual(statuses[0].sample_count, 3)
 
 
 if __name__ == "__main__":
