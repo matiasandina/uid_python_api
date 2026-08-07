@@ -1,5 +1,40 @@
 # Scripts
 
+## `tcp_probe.py`
+
+Standalone UID reader TCP probe for hardware bring-up and debugging.
+
+Use this when you want to validate the reader network path without running the
+full application (`main.py`), preflight UI, CSV logging, Doric control, trigger
+scheduler, or live display.
+
+From a configured `config.local.yaml` with one reader:
+
+```bash
+uv run --python .venv/bin/python scripts/tcp_probe.py
+```
+
+Probe a specific configured reader:
+
+```bash
+uv run --python .venv/bin/python scripts/tcp_probe.py --device Reader-1
+```
+
+Probe a raw endpoint directly:
+
+```bash
+uv run --python .venv/bin/python scripts/tcp_probe.py 10.0.127.107 10001
+```
+
+Defaults match the API startup path: open TCP, send `RRLOOP\r\n`, then listen
+for ASCII data. Use `--no-command` to test only whether the TCP socket opens,
+or `--require-data` when the probe should fail unless reader bytes arrive.
+Add `--verbose` to print each step as it happens:
+
+```bash
+uv run --python .venv/bin/python scripts/tcp_probe.py 10.0.127.107 10001 --verbose --require-data
+```
+
 ## `plot_temperature_snapshot.py`
 
 One-shot temperature visualization for active or completed session CSV files.
